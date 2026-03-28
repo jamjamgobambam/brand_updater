@@ -212,7 +212,7 @@ For subsequent updates after the first deployment:
 ```bash
 clasp push
 clasp version "description"
-clasp redeploy <deploymentId> <newVersion> "description"
+clasp redeploy <deploymentId> --versionNumber <newVersion> --description "description"
 ```
 
 To list existing deployments and their IDs:
@@ -220,6 +220,25 @@ To list existing deployments and their IDs:
 ```bash
 clasp deployments
 ```
+
+To open the live web app URL in a browser:
+
+```bash
+clasp open-web-app
+```
+
+> **Prerequisite for `clasp open-web-app`:** The `appsscript.json` manifest must
+> include a `webapp` block, otherwise clasp reports "No web app entry point found":
+>
+> ```json
+> "webapp": {
+>   "executeAs": "USER_DEPLOYING",
+>   "access": "DOMAIN"
+> }
+> ```
+>
+> Valid values: `executeAs` — `USER_DEPLOYING` (Me) or `USER_ACCESSING` (user running the app).
+> `access` — `MYSELF`, `DOMAIN`, or `ANYONE`.
 
 > **Note:** The `execute as` / `who has access` settings can only be configured
 > in the browser editor. Run `clasp open-script` and set them once during the

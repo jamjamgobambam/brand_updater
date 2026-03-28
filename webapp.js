@@ -16,8 +16,7 @@
  */
 function doGet() {
   return HtmlService.createHtmlOutputFromFile("index")
-    .setTitle("Brand Updater")
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.SAMEORIGIN);
+    .setTitle("Brand Updater");
 }
 
 // ---------------------------------------------------------------------------
