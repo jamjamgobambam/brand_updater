@@ -184,7 +184,9 @@ Uploads all new and changed files:
 - `appsscript.json` (updated)
 - `main.js` (updated)
 
-### Step 15 — Deploy as Web App (manual, in cloud editor)
+### Step 15 — Deploy as Web App
+
+**First deployment** — access settings must be configured in the browser editor once:
 
 1. Open the project: `clasp open-script`
 2. **Deploy → New deployment**
@@ -192,6 +194,37 @@ Uploads all new and changed files:
 4. Execute as: **Me**
 5. Who has access: **Anyone within [org] (Google Workspace)**
 6. Click **Deploy** and copy the web app URL
+
+**Alternatively (and for all subsequent updates), deploy entirely from the terminal:**
+
+```bash
+# Create an immutable version snapshot
+clasp version "description"
+# Note the version number printed (e.g., 1)
+
+# Deploy that version
+clasp deploy 1 "web app v1"
+# Prints the deploymentId and web app URL
+```
+
+For subsequent updates after the first deployment:
+
+```bash
+clasp push
+clasp version "description"
+clasp redeploy <deploymentId> <newVersion> "description"
+```
+
+To list existing deployments and their IDs:
+
+```bash
+clasp deployments
+```
+
+> **Note:** The `execute as` / `who has access` settings can only be configured
+> in the browser editor. Run `clasp open-script` and set them once during the
+> first deployment; all future redeployments via `clasp redeploy` will inherit
+> those settings.
 
 ---
 
