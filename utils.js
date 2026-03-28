@@ -38,6 +38,13 @@ const LOGO_CONFIG = {
   newLogoFileId: "YOUR_DRIVE_FILE_ID",
   cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
   titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
+  docsLogo: {
+    oldSourceUri: null, // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
+    minWidthPt:   40,   // Size bounds fallback — adjust based on logDocImages output
+    maxWidthPt:   200,
+    minHeightPt:  20,
+    maxHeightPt:  100,
+  },
 };
 
 // =============================================================================

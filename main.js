@@ -50,9 +50,10 @@ function updateAllSlidesInFolder(folderId, dryRun) {
  * Runs the full brand update pipeline on every Google Docs document
  * found directly in the specified Drive folder.
  *
- * @param {string} folderId  Google Drive folder ID.
+ * @param {string}  folderId           Google Drive folder ID.
+ * @param {boolean} [dryRun=false]     Passed through to updateDocsDocument (logo dry run).
  */
-function updateAllDocsInFolder(folderId) {
+function updateAllDocsInFolder(folderId, dryRun) {
   const DOCS_MIME = "application/vnd.google-apps.document";
   const folder = DriveApp.getFolderById(folderId);
   const files  = folder.getFiles();
@@ -68,7 +69,7 @@ function updateAllDocsInFolder(folderId) {
     Logger.log("Processing: %s (%s)", fileName, file.getId());
 
     try {
-      updateDocsDocument(file.getId());
+      updateDocsDocument(file.getId(), dryRun);
       processed++;
       Logger.log("  ✓ Done: %s", fileName);
     } catch (err) {
