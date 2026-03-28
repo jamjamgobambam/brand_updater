@@ -2,7 +2,8 @@
   "timeZone": "America/New_York",
   "dependencies": {
     "enabledAdvancedServices": [
-      { "userSymbol": "Slides", "serviceId": "slides", "version": "v1" }
+      { "userSymbol": "Slides", "serviceId": "slides", "version": "v1" },
+      { "userSymbol": "Docs", "serviceId": "docs", "version": "v1" }
     ]
   },
   "exceptionLogging": "STACKDRIVER",

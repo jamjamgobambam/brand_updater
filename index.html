@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Brand Updater</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+
+    body {
+      font-family: "Google Sans", Arial, sans-serif;
+      background: #f8f9fa;
+      margin: 0;
+      padding: 24px;
+      color: #202124;
+    }
+
+    .card {
+      background: #fff;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,.15);
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 500;
+      margin: 0 0 8px;
+      color: #003547;
+    }
+
+    .subtitle {
+      font-size: 14px;
+      color: #5f6368;
+      margin: 0 0 28px;
+    }
+
+    label {
+      display: block;
+      font-size: 13px;
+      font-weight: 500;
+      margin-bottom: 6px;
+      color: #3c4043;
+    }
+
+    input[type="text"] {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      font-size: 14px;
+      color: #202124;
+      outline: none;
+      transition: border-color .15s;
+    }
+    input[type="text"]:focus { border-color: #1a73e8; }
+
+    .placeholder-hint {
+      font-size: 12px;
+      color: #80868b;
+      margin-top: 4px;
+    }
+
+    .checkbox-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+    }
+    .checkbox-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
+    .checkbox-row label {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 400;
+      cursor: pointer;
+    }
+    .dry-run-hint {
+      font-size: 12px;
+      color: #5f6368;
+      margin: 4px 0 0 26px;
+    }
+
+    button {
+      margin-top: 24px;
+      padding: 10px 24px;
+      background: #003547;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background .15s, opacity .15s;
+    }
+    button:hover:not(:disabled) { background: #005e54; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+
+    /* Loading indicator */
+    .spinner {
+      display: none;
+      align-items: center;
+      gap: 10px;
+      margin-top: 20px;
+      font-size: 14px;
+      color: #5f6368;
+    }
+    .spinner.visible { display: flex; }
+    .spinner-ring {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #dadce0;
+      border-top-color: #003547;
+      border-radius: 50%;
+      animation: spin .7s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Results panel */
+    #results {
+      display: none;
+      margin-top: 28px;
+      border-top: 1px solid #e8eaed;
+      padding-top: 20px;
+    }
+    #results.visible { display: block; }
+
+    .summary {
+      font-size: 14px;
+      margin-bottom: 12px;
+    }
+    .summary .ok    { color: #137333; font-weight: 500; }
+    .summary .fail  { color: #c5221f; font-weight: 500; }
+
+    .detail-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      max-height: 320px;
+      overflow-y: auto;
+      border: 1px solid #e8eaed;
+      border-radius: 4px;
+    }
+    .detail-list li {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 10px 12px;
+      font-size: 13px;
+      border-bottom: 1px solid #f1f3f4;
+    }
+    .detail-list li:last-child { border-bottom: none; }
+    .status-icon { font-size: 14px; flex-shrink: 0; line-height: 1.4; }
+    .detail-name  { color: #202124; word-break: break-word; }
+    .detail-error { color: #c5221f; font-size: 12px; margin-top: 2px; }
+
+    /* Error banner */
+    #error-banner {
+      display: none;
+      margin-top: 20px;
+      padding: 12px 16px;
+      background: #fce8e6;
+      border-left: 4px solid #c5221f;
+      border-radius: 4px;
+      font-size: 14px;
+      color: #c5221f;
+    }
+    #error-banner.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Brand Updater</h1>
+    <p class="subtitle">Paste a Google Slides, Docs, or Drive folder URL to apply the Code.org brand update.</p>
+
+    <label for="url-input">Google Drive / Docs / Slides URL</label>
+    <input
+      type="text"
+      id="url-input"
+      placeholder="https://docs.google.com/presentation/d/... or https://drive.google.com/drive/folders/..."
+    />
+    <p class="placeholder-hint">Supported: Slides presentation · Docs document · Drive folder · Drive file link</p>
+
+    <div class="checkbox-row">
+      <input type="checkbox" id="dry-run" checked />
+      <label for="dry-run">Dry run (preview only)</label>
+    </div>
+    <p class="dry-run-hint">When checked, logo replacements are logged but no files are modified. Uncheck to apply changes.</p>
+
+    <button id="run-btn" onclick="runUpdate()">Run Update</button>
+
+    <div class="spinner" id="spinner">
+      <div class="spinner-ring"></div>
+      <span>Processing&hellip; this may take a minute for large folders.</span>
+    </div>
+
+    <div id="error-banner"></div>
+
+    <div id="results">
+      <p class="summary" id="summary-text"></p>
+      <ul class="detail-list" id="detail-list"></ul>
+    </div>
+  </div>
+
+  <script>
+    function runUpdate() {
+      var url    = document.getElementById("url-input").value.trim();
+      var dryRun = document.getElementById("dry-run").checked;
+
+      if (!url) {
+        showError("Please enter a Google Drive or Docs URL.");
+        return;
+      }
+
+      setRunning(true);
+      clearResults();
+
+      google.script.run
+        .withSuccessHandler(showResults)
+        .withFailureHandler(showError)
+        .processUrl(url, dryRun);
+    }
+
+    function setRunning(running) {
+      document.getElementById("run-btn").disabled  = running;
+      document.getElementById("spinner").classList.toggle("visible", running);
+    }
+
+    function clearResults() {
+      document.getElementById("results").classList.remove("visible");
+      document.getElementById("error-banner").classList.remove("visible");
+      document.getElementById("detail-list").innerHTML = "";
+      document.getElementById("summary-text").textContent = "";
+    }
+
+    function showResults(result) {
+      setRunning(false);
+
+      var summaryEl = document.getElementById("summary-text");
+      var listEl    = document.getElementById("detail-list");
+      var panel     = document.getElementById("results");
+
+      var parts = [];
+      if (result.processed > 0) {
+        parts.push('<span class="ok">' + result.processed + " processed</span>");
+      }
+      if (result.failed > 0) {
+        parts.push('<span class="fail">' + result.failed + " failed</span>");
+      }
+      if (parts.length === 0) {
+        parts.push("No files matched.");
+      }
+      summaryEl.innerHTML = parts.join(" &middot; ");
+
+      (result.details || []).forEach(function(item) {
+        var li = document.createElement("li");
+        var icon = item.status === "ok" ? "✓" : "✗";
+        var iconColor = item.status === "ok" ? "color:#137333" : "color:#c5221f";
+        var errorHtml = item.error
+          ? '<div class="detail-error">' + escapeHtml(item.error) + "</div>"
+          : "";
+        li.innerHTML =
+          '<span class="status-icon" style="' + iconColor + '">' + icon + "</span>" +
+          '<div><div class="detail-name">' + escapeHtml(item.name) + "</div>" + errorHtml + "</div>";
+        listEl.appendChild(li);
+      });
+
+      panel.classList.add("visible");
+    }
+
+    function showError(err) {
+      setRunning(false);
+      var banner = document.getElementById("error-banner");
+      var msg = (typeof err === "string") ? err : (err && err.message) ? err.message : "An unexpected error occurred.";
+      banner.textContent = msg;
+      banner.classList.add("visible");
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+  </script>
+</body>
+</html>
