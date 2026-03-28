@@ -43,7 +43,7 @@ The standard approach is **clasp** — Google's official CLI that syncs local fi
 |---|---|
 | `clasp push` | Upload local changes to Apps Script cloud |
 | `clasp pull` | Download remote changes |
-| `clasp open` | Open the project in the browser editor |
+| `clasp open-script` | Open the project in the browser editor |
 
 ---
 
@@ -61,6 +61,6 @@ The standard approach is **clasp** — Google's official CLI that syncs local fi
 
 ## Verification
 
-1. Run `clasp open` to confirm the project appears in the Apps Script editor.
+1. Run `clasp open-script` to confirm the project appears in the Apps Script editor.
 2. Add a test function to `Code.js`, run `clasp push`, and verify it appears in the browser editor.
 3. Run the function from the browser editor to confirm execution works end-to-end.
