@@ -203,7 +203,7 @@ function buildInlineColorRequests(pages, colorMap) {
                   objectId: eid,
                   textRange: {
                     type: "FIXED_RANGE",
-                    startIndex: te.startIndex,
+                    startIndex: te.startIndex !== undefined ? te.startIndex : 0,
                     endIndex: te.endIndex,
                   },
                   style: {
@@ -374,7 +374,7 @@ function buildFontRequests(pages, fontMap) {
                 objectId: eid,
                 textRange: {
                   type: "FIXED_RANGE",
-                  startIndex: te.startIndex,
+                  startIndex: te.startIndex !== undefined ? te.startIndex : 0,
                   endIndex: te.endIndex,
                 },
                 style: {
