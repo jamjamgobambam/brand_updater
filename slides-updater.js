@@ -595,14 +595,40 @@ function replaceLogos(presentationId, dryRun) {
     presentation.layouts || []
   );
 
-  const newLogoUrl = driveFileUrl(LOGO_CONFIG.newLogoFileId);
+  // In dry-run mode, delegate to buildLogoReplaceRequests for logging only.
+  if (isDryRun) {
+    buildLogoReplaceRequests(mastersAndLayouts, pageWidth, pageHeight, null, true);
+    return;
+  }
+
+  // Identify objectIds of logo elements using the existing position heuristics.
+  // Pass a placeholder URL — we only need the objectIds, not the request objects.
   const requests = buildLogoReplaceRequests(
-    mastersAndLayouts, pageWidth, pageHeight, newLogoUrl, isDryRun
+    mastersAndLayouts, pageWidth, pageHeight, "_placeholder_", false
+  );
+  if (requests.length === 0) return;
+
+  const logoObjectIds = new Set(
+    requests.map(function(r) { return r.replaceImage.imageObjectId; })
   );
 
-  if (!isDryRun && requests.length > 0) {
-    Slides.Presentations.batchUpdate({ requests: requests }, presentationId);
-  }
+  // Fetch the logo blob via DriveApp — no public URL required.
+  // SlidesApp.Image.replace(blobSource, crop=false) scales to fit the existing
+  // element bounds while preserving aspect ratio (equivalent to CENTER_INSIDE).
+  const logoBlob = DriveApp.getFileById(LOGO_CONFIG.newLogoFileId).getBlob();
+  const deck = SlidesApp.openById(presentationId);
+
+  deck.getMasters().forEach(function(master) {
+    master.getImages().forEach(function(img) {
+      if (logoObjectIds.has(img.getObjectId())) img.replace(logoBlob, false);
+    });
+  });
+
+  deck.getLayouts().forEach(function(layout) {
+    layout.getImages().forEach(function(img) {
+      if (logoObjectIds.has(img.getObjectId())) img.replace(logoBlob, false);
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------

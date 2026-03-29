@@ -87,13 +87,11 @@ function normalizedRgbMatches(apiRgb, targetHex, tolerance) {
 }
 
 /**
- * Builds a publicly accessible image URL for a Google Drive file.
+ * Builds a publicly accessible download URL for a Google Drive file.
  * The file must be shared as "Anyone with the link can view".
- * Uses the /thumbnail endpoint which serves image content directly without
- * redirects, as required by the Slides API replaceImage method.
  * @param {string} fileId  Google Drive file ID.
  * @returns {string}
  */
 function driveFileUrl(fileId) {
-  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w2000`;
+  return `https://drive.google.com/uc?export=download&id=${fileId}`;
 }
