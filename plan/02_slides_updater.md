@@ -82,7 +82,7 @@ Apps Script's manifest declares which advanced services your script uses. If it'
 
 Apps Script treats all `.js` files in the project as a single global scope (they're concatenated at runtime). Splitting by feature keeps things navigable — `slides-updater.js` is self-contained and later you can add `docs-updater.js` without touching the Slides logic. `main.js` is the "entry point" layer — the functions you'd actually click "Run" on in the editor, like `updateAllSlidesInFolder`.
 
-**`utils.js` contains:** `COLOR_MAP`, `FONT_MAP`, `hexToNormalizedRgb`, `normalizedRgbMatches`, `driveFileUrl`, and `LOGO_CONFIG`. These are defined once here and available to both `slides-updater.js` and `docs-updater.js` via the shared global scope — no import statements needed. Do **not** redefine these in `slides-updater.js` or `docs-updater.js`; duplicate `const` declarations across files cause a runtime error.
+**`utils.js` contains:** `COLOR_MAP`, `FONT_MAP`, `hexToNormalizedRgb`, `normalizedRgbMatches`, `driveFileUrl`, `LOGO_CONFIG`, and `getPresentation`. These are defined once here and available to both `slides-updater.js` and `docs-updater.js` via the shared global scope — no import statements needed. Do **not** redefine these in `slides-updater.js` or `docs-updater.js`; duplicate `const` declarations across files cause a runtime error.
 
 ---
 
@@ -218,12 +218,13 @@ Text runs where `fontFamily` is `null` are never matched, which is intentional �
 
 *Depends on step 12.*
 
-- Calls `Slides.Presentations.get(presentationId)` to get full presentation JSON
+- Calls `getPresentation(presentationId)` to get full presentation JSON (with retry — see `utils.js`)
 - Collects all page categories: `presentation.masters`, `presentation.layouts`, `presentation.slides`
+- Also collects **speaker notes pages** by reading `slide.slideProperties.notesPage` for each slide and appending it to the pages array
 - Calls `buildFontRequests(allPages, FONT_MAP)`
 - If requests are non-empty, submits via `Slides.Presentations.batchUpdate()`
 
-Same single-read pattern as `replaceInlineColors` — one API call for the full JSON, then process all three page categories. Masters and layouts must be included because placeholder text on those pages also has explicit font settings that slide-level changes won't override.
+Same single-read pattern as `replaceInlineColors` — one API call for the full JSON, then process all page categories. Masters and layouts must be included because placeholder text on those pages also has explicit font settings that slide-level changes won't override. Speaker notes pages are included so that font replacements apply to the notes text as well as the slide content — the `notesPage` object has the same `pageElements` structure, so `buildFontRequests` handles it without any changes.
 
 ---
 
@@ -263,6 +264,18 @@ Thresholds are percentages of the slide dimensions. Keeping them in a constant m
 Builds `https://drive.google.com/uc?export=download&id=${fileId}`.
 
 The `replaceImage` API requires a publicly accessible URL — it cannot accept a Drive file ID directly. This helper centralizes the URL format so if Google ever changes the export URL structure, there's one place to fix it. The `export=download` parameter is more reliable than `export=view` — the `view` variant has been intermittently blocked by Google's anti-abuse systems for large or frequently-accessed files, causing `replaceImage` to fail with an opaque URL access error.
+
+---
+
+### `getPresentation(presentationId, maxAttempts)` (in `utils.js`)
+
+Wraps `Slides.Presentations.get()` with retry logic for transient API failures (e.g. `"Empty response"` errors that occasionally occur on valid presentation IDs).
+
+- Attempts the call up to `maxAttempts` times (default: 3)
+- On failure, waits `2^attempt` seconds before retrying (1 s, then 2 s)
+- Re-throws the error if all attempts fail
+
+Used in place of bare `Slides.Presentations.get()` calls in `replaceFonts`. The Slides API occasionally returns an empty response for a valid, accessible presentation — a single retry is almost always sufficient to recover. Using exponential backoff avoids hammering the API immediately after a transient failure.
 
 ---
 
@@ -331,7 +344,7 @@ The Drive API lets you list files in a folder and filter by MIME type. `applicat
 | File | Action | Purpose |
 |---|---|---|
 | `appsscript.json` | Modify | Add Advanced Slides API under `dependencies.enabledAdvancedServices` |
-| `utils.js` | **Create first** | Shared: `COLOR_MAP`, `FONT_MAP`, `hexToNormalizedRgb`, `normalizedRgbMatches`, `driveFileUrl`, `LOGO_CONFIG` |
+| `utils.js` | **Create first** | Shared: `COLOR_MAP`, `FONT_MAP`, `hexToNormalizedRgb`, `normalizedRgbMatches`, `driveFileUrl`, `LOGO_CONFIG`, `getPresentation` |
 | `slides-updater.js` | Create | Logic functions from Phase 3 (colors: steps 5–9, fonts: steps 12–13, logos: steps 14, 17–19) — references globals from `utils.js` |
 | `main.js` | Create | Batch wrapper (Phase 4) + trigger entry points |
 
@@ -348,6 +361,7 @@ The Drive API lets you list files in a folder and filter by MIME type. `applicat
 7. Confirm Poppins and Figtree text has been replaced with Lexend across masters, layouts, and slides.
 8. Confirm bold Poppins/Figtree text is still bold after replacement (weight preserved via `weightedFontFamily`).
 9. Confirm text with a different explicit font (e.g. "Roboto") is unchanged.
+10. Confirm Poppins and Figtree text in speaker notes has also been replaced with Lexend.
 10. Confirm runs with no explicit font set (inheriting) still render correctly after the master update.
 11. Run `logAllImages(testId)` on a representative presentation — review Logger output to determine the correct position percentage thresholds for logos and whether `sourceUrl` is populated for any images.
 12. Set `LOGO_CONFIG` thresholds based on the output of step 11.
