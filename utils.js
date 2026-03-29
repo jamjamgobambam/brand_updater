@@ -35,7 +35,7 @@ const FONT_MAP = [
  * All threshold values are percentages of the slide dimensions (0.0–1.0).
  */
 const LOGO_CONFIG = {
-  newLogoFileId: "YOUR_DRIVE_FILE_ID",
+  newLogoFileId: "1pIoxLkryTKZjwuWliRp7DQCGKb37F_tU",
   cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
   titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
   docsLogo: {
@@ -87,11 +87,13 @@ function normalizedRgbMatches(apiRgb, targetHex, tolerance) {
 }
 
 /**
- * Builds a publicly accessible download URL for a Google Drive file.
+ * Builds a publicly accessible image URL for a Google Drive file.
  * The file must be shared as "Anyone with the link can view".
+ * Uses the /thumbnail endpoint which serves image content directly without
+ * redirects, as required by the Slides API replaceImage method.
  * @param {string} fileId  Google Drive file ID.
  * @returns {string}
  */
 function driveFileUrl(fileId) {
-  return `https://drive.google.com/uc?export=download&id=${fileId}`;
+  return `https://drive.google.com/thumbnail?id=${fileId}&sz=w2000`;
 }
