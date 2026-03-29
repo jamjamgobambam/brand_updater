@@ -81,6 +81,10 @@
       color: #5f6368;
       margin: 4px 0 0 26px;
     }
+    .dry-run-hint.live-mode {
+      color: #b06000;
+      font-weight: 500;
+    }
 
     button {
       margin-top: 24px;
@@ -184,12 +188,12 @@
     <p class="placeholder-hint">Supported: Slides presentation · Docs document · Drive folder · Drive file link</p>
 
     <div class="checkbox-row">
-      <input type="checkbox" id="dry-run" checked />
-      <label for="dry-run">Dry run (preview only)</label>
+      <input type="checkbox" id="dry-run" checked onchange="updateDryRunUi()" />
+      <label for="dry-run">Dry run</label>
     </div>
-    <p class="dry-run-hint">When checked, logo replacements are logged but no files are modified. Uncheck to apply changes.</p>
+    <p class="dry-run-hint" id="dry-run-hint">Preview mode &mdash; logos will be scanned and logged, but no files will be modified.</p>
 
-    <button id="run-btn" onclick="runUpdate()">Run Update</button>
+    <button id="run-btn" onclick="runUpdate()">Preview Changes</button>
 
     <div class="spinner" id="spinner">
       <div class="spinner-ring"></div>
@@ -221,6 +225,21 @@
         .withSuccessHandler(showResults)
         .withFailureHandler(showError)
         .processUrl(url, dryRun);
+    }
+
+    function updateDryRunUi() {
+      var dryRun  = document.getElementById("dry-run").checked;
+      var hint    = document.getElementById("dry-run-hint");
+      var btn     = document.getElementById("run-btn");
+      if (dryRun) {
+        hint.textContent = "Preview mode \u2014 logos will be scanned and logged, but no files will be modified.";
+        hint.classList.remove("live-mode");
+        btn.textContent  = "Preview Changes";
+      } else {
+        hint.textContent = "Live mode \u2014 matching logos will be replaced in your files. This cannot be undone.";
+        hint.classList.add("live-mode");
+        btn.textContent  = "Apply Changes";
+      }
     }
 
     function setRunning(running) {
