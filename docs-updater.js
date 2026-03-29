@@ -53,6 +53,32 @@ function collectDocContent(document) {
 }
 
 // ---------------------------------------------------------------------------
+// buildNamedStyleLookup
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a lookup map of namedStyleType → textStyle from the document's
+ * namedStyles array. Used as a fallback when a text run carries no explicit
+ * inline style, so the effective font / color can still be detected.
+ *
+ * Keys are namedStyleType strings (e.g. "NORMAL_TEXT", "HEADING_1").
+ * Values are the textStyle object for that style (may be {}).
+ *
+ * @param {Object} document  Full document object from Docs.Documents.get().
+ * @returns {Object}  Map: namedStyleType → textStyle object.
+ */
+function buildNamedStyleLookup(document) {
+  const lookup = {};
+  const styles = (document.namedStyles && document.namedStyles.styles) || [];
+  styles.forEach(function(namedStyle) {
+    if (namedStyle.namedStyleType) {
+      lookup[namedStyle.namedStyleType] = namedStyle.textStyle || {};
+    }
+  });
+  return lookup;
+}
+
+// ---------------------------------------------------------------------------
 // Internal traversal helper
 // ---------------------------------------------------------------------------
 
@@ -61,19 +87,24 @@ function collectDocContent(document) {
  * in paragraphs and table cells (recursively handles nested tables).
  *
  * @param {Object[]} contentArray
- * @param {Function} callback  Called with { startIndex, endIndex, style }.
+ * @param {Function} callback  Called with { startIndex, endIndex, style, namedStyleType }.
  */
 function traverseContentArray(contentArray, callback) {
   if (!contentArray) return;
 
   contentArray.forEach(function(structuralElement) {
     if (structuralElement.paragraph) {
+      var namedStyleType =
+        (structuralElement.paragraph.paragraphStyle &&
+         structuralElement.paragraph.paragraphStyle.namedStyleType) ||
+        "NORMAL_TEXT";
       (structuralElement.paragraph.elements || []).forEach(function(element) {
         if (!element.textRun) return;
         callback({
-          startIndex: element.startIndex,
-          endIndex:   element.endIndex,
-          style:      element.textRun.textStyle || {},
+          startIndex:     element.startIndex,
+          endIndex:       element.endIndex,
+          style:          element.textRun.textStyle || {},
+          namedStyleType: namedStyleType,
         });
       });
     }
@@ -93,27 +124,38 @@ function traverseContentArray(contentArray, callback) {
 // ---------------------------------------------------------------------------
 
 /**
- * Builds updateTextStyle requests for every textRun whose explicit foreground
+ * Builds updateTextStyle requests for every textRun whose effective foreground
  * color matches an entry in colorMap. segmentId is included in every range so
  * requests targeting headers, footers, and footnotes are accepted by the API.
  *
- * Only explicit inline foregroundColor overrides are changed; text whose color
- * is inherited from a Named Style has no rgbColor here and is not touched.
+ * Checks the explicit inline foregroundColor first; if absent, falls back to
+ * the Named Style's foregroundColor so that runs inheriting their color from
+ * a Named Style are also updated.
  *
  * @param {{ content: Object[], segmentId: string }[]} segments
- * @param {Object[]} colorMap  Array of { oldHex, newHex } entries (COLOR_MAP).
- * @returns {Object[]}         Array of updateTextStyle request objects.
+ * @param {Object[]} colorMap          Array of { oldHex, newHex } entries (COLOR_MAP).
+ * @param {Object}   namedStyleLookup  Map of namedStyleType → textStyle (from buildNamedStyleLookup).
+ * @returns {Object[]}                 Array of updateTextStyle request objects.
  */
-function buildDocColorRequests(segments, colorMap) {
+function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
   const requests = [];
 
   segments.forEach(function(segment) {
     traverseContentArray(segment.content, function(run) {
-      const fgColor =
+      const explicitFgColor =
         run.style.foregroundColor &&
         run.style.foregroundColor.color &&
         run.style.foregroundColor.color.rgbColor;
 
+      // Fall back to Named Style color only when no explicit inline color is set.
+      const nsStyle = (namedStyleLookup && namedStyleLookup[run.namedStyleType]) || {};
+      const inheritedFgColor =
+        !explicitFgColor &&
+        nsStyle.foregroundColor &&
+        nsStyle.foregroundColor.color &&
+        nsStyle.foregroundColor.color.rgbColor;
+
+      const fgColor = explicitFgColor || inheritedFgColor;
       if (!fgColor) return;
 
       colorMap.forEach(function(mapping) {
@@ -154,7 +196,8 @@ function buildDocColorRequests(segments, colorMap) {
 function replaceDocColors(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
-  const requests = buildDocColorRequests(segments, COLOR_MAP);
+  const nsLookup = buildNamedStyleLookup(doc);
+  const requests = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
 
   if (requests.length === 0) {
     Logger.log("  replaceDocColors: no color changes for %s", docId);
@@ -172,30 +215,39 @@ function replaceDocColors(docId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Builds updateTextStyle requests for every textRun whose explicit font family
+ * Builds updateTextStyle requests for every textRun whose effective font family
  * matches an entry in fontMap. Preserves font weight via weightedFontFamily so
  * bold runs stay bold after replacement.
  *
- * Runs with no explicit font (inheriting from a Named Style) are skipped.
+ * Checks the explicit inline weightedFontFamily first; if absent, falls back to
+ * the Named Style's font so that runs inheriting their font are also updated.
  * segmentId is included in every range.
  *
  * @param {{ content: Object[], segmentId: string }[]} segments
- * @param {Object[]} fontMap  Array of { oldFont, newFont } entries (FONT_MAP).
- * @returns {Object[]}        Array of updateTextStyle request objects.
+ * @param {Object[]} fontMap           Array of { oldFont, newFont } entries (FONT_MAP).
+ * @param {Object}   namedStyleLookup  Map of namedStyleType → textStyle (from buildNamedStyleLookup).
+ * @returns {Object[]}                 Array of updateTextStyle request objects.
  */
-function buildDocFontRequests(segments, fontMap) {
+function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
   const requests = [];
 
   segments.forEach(function(segment) {
     traverseContentArray(segment.content, function(run) {
       const style = run.style;
       const wff   = style.weightedFontFamily;
-      const fontFamily = wff ? wff.fontFamily : style.fontFamily;
-      if (!fontFamily) return; // inheriting from Named Style — skip
+      const explicitFontFamily = wff ? wff.fontFamily : style.fontFamily;
+
+      // Fall back to Named Style font only when no explicit inline font is set.
+      const nsStyle = (namedStyleLookup && namedStyleLookup[run.namedStyleType]) || {};
+      const nsWff   = nsStyle.weightedFontFamily;
+      const inheritedFontFamily = !explicitFontFamily && (nsWff ? nsWff.fontFamily : nsStyle.fontFamily);
+
+      const fontFamily = explicitFontFamily || inheritedFontFamily;
+      if (!fontFamily) return; // no font context at all — skip
 
       fontMap.forEach(function(mapping) {
         if (fontFamily === mapping.oldFont) {
-          const existingWeight = wff ? wff.weight : 400;
+          const existingWeight = wff ? wff.weight : (nsWff ? nsWff.weight : 400);
           requests.push({
             updateTextStyle: {
               range: {
@@ -233,7 +285,8 @@ function buildDocFontRequests(segments, fontMap) {
 function replaceDocFonts(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
-  const requests = buildDocFontRequests(segments, FONT_MAP);
+  const nsLookup = buildNamedStyleLookup(doc);
+  const requests = buildDocFontRequests(segments, FONT_MAP, nsLookup);
 
   if (requests.length === 0) {
     Logger.log("  replaceDocFonts: no font changes for %s", docId);
