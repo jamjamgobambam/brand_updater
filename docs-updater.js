@@ -123,6 +123,41 @@ function traverseContentArray(contentArray, callback) {
 }
 
 // ---------------------------------------------------------------------------
+// batchUpdateDocWithUrlFetch
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends a batchUpdate to the Docs REST API directly via UrlFetchApp, bypassing
+ * the Apps Script Advanced Service wrapper.
+ *
+ * The Advanced Service converts camelCase JS keys and may not support all
+ * request types (e.g. updateNamedStyle). UrlFetchApp sends the JSON payload
+ * exactly as built, preserving camelCase field names as the REST API expects.
+ *
+ * Requires that the script has already been granted documents scope (satisfied
+ * automatically when any Docs Advanced Service call has been made).
+ *
+ * @param {string}   docId     Google Docs document ID.
+ * @param {Object[]} requests  Array of Docs API request objects (camelCase).
+ */
+function batchUpdateDocWithUrlFetch(docId, requests) {
+  var token   = ScriptApp.getOAuthToken();
+  var url     = "https://docs.googleapis.com/v1/documents/" + docId + ":batchUpdate";
+  var payload = JSON.stringify({ requests: requests });
+  var response = UrlFetchApp.fetch(url, {
+    method:             "post",
+    contentType:        "application/json",
+    headers:            { Authorization: "Bearer " + token },
+    payload:            payload,
+    muteHttpExceptions: true,
+  });
+  var code = response.getResponseCode();
+  if (code !== 200) {
+    throw new Error("batchUpdate (REST) failed (" + code + "): " + response.getContentText());
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Step 5 — buildDocColorRequests
 // ---------------------------------------------------------------------------
 
@@ -139,39 +174,23 @@ function traverseContentArray(contentArray, callback) {
  * @param {Object[]} colorMap  Array of { oldHex, newHex } entries (COLOR_MAP).
  * @returns {Object[]}         Array of updateTextStyle request objects.
  */
-function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
+function buildDocColorRequests(segments, colorMap) {
   const requests = [];
-  const normalStyle     = (namedStyleLookup && namedStyleLookup["NORMAL_TEXT"]) || {};
-  const normalTextColor =
-    normalStyle.foregroundColor &&
-    normalStyle.foregroundColor.color &&
-    normalStyle.foregroundColor.color.rgbColor;
 
   segments.forEach(function(segment) {
     traverseContentArray(segment.content, function(run) {
-      const explicitColor =
+      // Only process runs with an explicit inline foregroundColor override.
+      // Runs inheriting their color from a Named Style are handled at the
+      // Named Style level by buildDocNamedStyleColorRequests (via UrlFetchApp).
+      const fgColor =
         run.style.foregroundColor &&
         run.style.foregroundColor.color &&
         run.style.foregroundColor.color.rgbColor;
 
-      // Determine effective color: inline override → Named Style → NORMAL_TEXT proxy.
-      // The NORMAL_TEXT proxy catches heading/title runs that inherit their color
-      // from the document theme and store nothing explicit at the run or style level.
-      var effectiveColor = explicitColor;
-      if (!effectiveColor) {
-        const nsStyle = (namedStyleLookup && namedStyleLookup[run.namedStyleType]) || {};
-        effectiveColor =
-          nsStyle.foregroundColor &&
-          nsStyle.foregroundColor.color &&
-          nsStyle.foregroundColor.color.rgbColor;
-      }
-      if (!effectiveColor && run.namedStyleType !== "NORMAL_TEXT") {
-        effectiveColor = normalTextColor;
-      }
-      if (!effectiveColor) return;
+      if (!fgColor) return;
 
       colorMap.forEach(function(mapping) {
-        if (normalizedRgbMatches(effectiveColor, mapping.oldHex)) {
+        if (normalizedRgbMatches(fgColor, mapping.oldHex)) {
           requests.push({
             updateTextStyle: {
               range: {
@@ -282,16 +301,27 @@ function buildDocNamedStyleColorRequests(doc, colorMap) {
 function replaceDocColors(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
-  const nsLookup = buildNamedStyleLookup(doc);
-  const requests = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
 
-  if (requests.length === 0) {
-    Logger.log("  replaceDocColors: no color changes for %s", docId);
-    return;
+  // Step A — update Named Style definitions (TITLE, HEADING_1–6, NORMAL_TEXT,
+  // SUBTITLE) via direct REST call. This changes the styles dropdown and fixes
+  // all text that inherits its color from a Named Style.
+  const nsRequests = buildDocNamedStyleColorRequests(doc, COLOR_MAP);
+  if (nsRequests.length > 0) {
+    batchUpdateDocWithUrlFetch(docId, nsRequests);
+    Logger.log("  replaceDocColors: %d named-style requests for %s", nsRequests.length, docId);
   }
 
-  Docs.Documents.batchUpdate({ requests: requests }, docId);
-  Logger.log("  replaceDocColors: %d requests submitted for %s", requests.length, docId);
+  // Step B — stamp explicit overrides on runs that already had an explicit
+  // inline foregroundColor (those won’t be covered by the Named Style update).
+  const runRequests = buildDocColorRequests(segments, COLOR_MAP);
+  if (runRequests.length > 0) {
+    Docs.Documents.batchUpdate({ requests: runRequests }, docId);
+    Logger.log("  replaceDocColors: %d run requests for %s", runRequests.length, docId);
+  }
+
+  if (nsRequests.length === 0 && runRequests.length === 0) {
+    Logger.log("  replaceDocColors: no color changes for %s", docId);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -314,37 +344,22 @@ function replaceDocColors(docId) {
  * @param {Object[]} fontMap  Array of { oldFont, newFont } entries (FONT_MAP).
  * @returns {Object[]}        Array of updateTextStyle request objects.
  */
-function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
+function buildDocFontRequests(segments, fontMap) {
   const requests = [];
-  const normalStyle = (namedStyleLookup && namedStyleLookup["NORMAL_TEXT"]) || {};
-  const normalWff   = normalStyle.weightedFontFamily;
-  const normalFont  = normalWff ? normalWff.fontFamily : normalStyle.fontFamily;
 
   segments.forEach(function(segment) {
     traverseContentArray(segment.content, function(run) {
-      const style          = run.style;
-      const wff            = style.weightedFontFamily;
-      const explicitFamily = wff ? wff.fontFamily : style.fontFamily;
-
-      // Determine effective font: inline override → Named Style → NORMAL_TEXT proxy.
-      // The NORMAL_TEXT proxy catches heading/title runs that inherit their font
-      // from the document theme and store nothing explicit at the run or style level.
-      var effectiveFamily = explicitFamily;
-      var effectiveWeight = wff ? wff.weight : null;
-      if (!effectiveFamily) {
-        const nsStyle = (namedStyleLookup && namedStyleLookup[run.namedStyleType]) || {};
-        const nsWff   = nsStyle.weightedFontFamily;
-        effectiveFamily = nsWff ? nsWff.fontFamily : nsStyle.fontFamily;
-        effectiveWeight = nsWff ? nsWff.weight : null;
-      }
-      if (!effectiveFamily && run.namedStyleType !== "NORMAL_TEXT") {
-        effectiveFamily = normalFont;
-        effectiveWeight = normalWff ? normalWff.weight : null;
-      }
-      if (!effectiveFamily) return;
+      // Only process runs with an explicit inline weightedFontFamily override.
+      // Runs inheriting their font from a Named Style are handled at the
+      // Named Style level by buildDocNamedStyleFontRequests (via UrlFetchApp).
+      const style      = run.style;
+      const wff        = style.weightedFontFamily;
+      const fontFamily = wff ? wff.fontFamily : style.fontFamily;
+      if (!fontFamily) return;
 
       fontMap.forEach(function(mapping) {
-        if (effectiveFamily === mapping.oldFont) {
+        if (fontFamily === mapping.oldFont) {
+          const existingWeight = wff ? wff.weight : 400;
           requests.push({
             updateTextStyle: {
               range: {
@@ -355,7 +370,7 @@ function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
               textStyle: {
                 weightedFontFamily: {
                   fontFamily: mapping.newFont,
-                  weight:     effectiveWeight || 400,
+                  weight:     existingWeight,
                 },
               },
               fields: "weightedFontFamily",
@@ -452,16 +467,27 @@ function buildDocNamedStyleFontRequests(doc, fontMap) {
 function replaceDocFonts(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
-  const nsLookup = buildNamedStyleLookup(doc);
-  const requests = buildDocFontRequests(segments, FONT_MAP, nsLookup);
 
-  if (requests.length === 0) {
-    Logger.log("  replaceDocFonts: no font changes for %s", docId);
-    return;
+  // Step A — update Named Style definitions (TITLE, HEADING_1–6, NORMAL_TEXT,
+  // SUBTITLE) via direct REST call. This changes the styles dropdown and fixes
+  // all text that inherits its font from a Named Style.
+  const nsRequests = buildDocNamedStyleFontRequests(doc, FONT_MAP);
+  if (nsRequests.length > 0) {
+    batchUpdateDocWithUrlFetch(docId, nsRequests);
+    Logger.log("  replaceDocFonts: %d named-style requests for %s", nsRequests.length, docId);
   }
 
-  Docs.Documents.batchUpdate({ requests: requests }, docId);
-  Logger.log("  replaceDocFonts: %d requests submitted for %s", requests.length, docId);
+  // Step B — stamp explicit overrides on runs that already had an explicit
+  // inline font override (those won’t be covered by the Named Style update).
+  const runRequests = buildDocFontRequests(segments, FONT_MAP);
+  if (runRequests.length > 0) {
+    Docs.Documents.batchUpdate({ requests: runRequests }, docId);
+    Logger.log("  replaceDocFonts: %d run requests for %s", runRequests.length, docId);
+  }
+
+  if (nsRequests.length === 0 && runRequests.length === 0) {
+    Logger.log("  replaceDocFonts: no font changes for %s", docId);
+  }
 }
 
 // ---------------------------------------------------------------------------
