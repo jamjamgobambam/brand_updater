@@ -414,6 +414,13 @@ function replaceFonts(presentationId) {
     presentation.slides   || []
   );
 
+  // Include speaker notes pages from each slide
+  (presentation.slides || []).forEach(function(slide) {
+    if (slide.slideProperties && slide.slideProperties.notesPage) {
+      allPages.push(slide.slideProperties.notesPage);
+    }
+  });
+
   const requests = buildFontRequests(allPages, FONT_MAP);
   if (requests.length === 0) return;
 
