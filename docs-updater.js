@@ -232,13 +232,15 @@ function buildDocNamedStyleColorRequests(doc, colorMap) {
       if (normalizedRgbMatches(effectiveColor, mapping.oldHex)) {
         requests.push({
           updateNamedStyle: {
-            namedStyleType: ns.namedStyleType,
-            textStyle: {
-              foregroundColor: {
-                color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+            namedStyle: {
+              namedStyleType: ns.namedStyleType,
+              textStyle: {
+                foregroundColor: {
+                  color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+                },
               },
             },
-            fields: "foregroundColor",
+            fields: "textStyle.foregroundColor",
           },
         });
       }
@@ -388,14 +390,16 @@ function buildDocNamedStyleFontRequests(doc, fontMap) {
           : (ns.namedStyleType !== "NORMAL_TEXT" && normalTextWff ? normalTextWff.weight : 400);
         requests.push({
           updateNamedStyle: {
-            namedStyleType: ns.namedStyleType,
-            textStyle: {
-              weightedFontFamily: {
-                fontFamily: mapping.newFont,
-                weight:     weight,
+            namedStyle: {
+              namedStyleType: ns.namedStyleType,
+              textStyle: {
+                weightedFontFamily: {
+                  fontFamily: mapping.newFont,
+                  weight:     weight,
+                },
               },
             },
-            fields: "weightedFontFamily",
+            fields: "textStyle.weightedFontFamily",
           },
         });
       }
