@@ -95,3 +95,23 @@ function normalizedRgbMatches(apiRgb, targetHex, tolerance) {
 function driveFileUrl(fileId) {
   return `https://drive.google.com/uc?export=download&id=${fileId}`;
 }
+
+/**
+ * Fetches a presentation with up to maxAttempts retries on transient errors
+ * (e.g. "Empty response"). Waits 2^attempt seconds between retries.
+ *
+ * @param {string} presentationId
+ * @param {number} [maxAttempts=3]
+ * @returns {Object} Presentation resource from the Slides API.
+ */
+function getPresentation(presentationId, maxAttempts) {
+  const attempts = maxAttempts || 3;
+  for (var i = 0; i < attempts; i++) {
+    try {
+      return Slides.Presentations.get(presentationId);
+    } catch (e) {
+      if (i === attempts - 1) throw e;
+      Utilities.sleep(Math.pow(2, i) * 1000);
+    }
+  }
+}

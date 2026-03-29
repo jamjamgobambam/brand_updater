@@ -407,7 +407,7 @@ function buildFontRequests(pages, fontMap) {
  * @param {string} presentationId
  */
 function replaceFonts(presentationId) {
-  const presentation = Slides.Presentations.get(presentationId);
+  const presentation = getPresentation(presentationId);
   const allPages = [].concat(
     presentation.masters  || [],
     presentation.layouts  || [],
