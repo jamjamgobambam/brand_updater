@@ -166,7 +166,8 @@ function batchUpdateDocWithUrlFetch(docId, requests) {
 
 /**
  * Walks all tables in all segments and builds updateTableCellStyle requests
- * for every cell whose background color matches an entry in colorMap.
+ * for every cell whose background color or border colors match an entry in
+ * colorMap.
  *
  * Must be sent via batchUpdateDocWithUrlFetch (REST) because the Apps Script
  * Advanced Service does not support updateTableCellStyle.
@@ -177,6 +178,17 @@ function batchUpdateDocWithUrlFetch(docId, requests) {
  */
 function buildDocTableCellColorRequests(doc, colorMap) {
   const requests = [];
+  const BORDER_SIDES = ["borderLeft", "borderRight", "borderTop", "borderBottom"];
+
+  function getBorderRgb(cell, side) {
+    return (
+      cell.tableCellStyle &&
+      cell.tableCellStyle[side] &&
+      cell.tableCellStyle[side].color &&
+      cell.tableCellStyle[side].color.color &&
+      cell.tableCellStyle[side].color.color.rgbColor
+    ) || null;
+  }
 
   function walkTableCells(contentArray, segmentId) {
     if (!contentArray) return;
@@ -184,6 +196,18 @@ function buildDocTableCellColorRequests(doc, colorMap) {
       if (el.table) {
         (el.table.tableRows || []).forEach(function(row, rowIndex) {
           (row.tableCells || []).forEach(function(cell, colIndex) {
+            const tableStartIndex = el.startIndex !== undefined ? el.startIndex : 0;
+            const tableRange = {
+              tableCellLocation: {
+                tableStartLocation: { index: tableStartIndex, segmentId: segmentId },
+                rowIndex:           rowIndex,
+                columnIndex:        colIndex,
+              },
+              rowSpan:    1,
+              columnSpan: 1,
+            };
+
+            // --- Background color ---
             const bgColor =
               cell.tableCellStyle &&
               cell.tableCellStyle.backgroundColor &&
@@ -193,22 +217,11 @@ function buildDocTableCellColorRequests(doc, colorMap) {
             if (bgColor) {
               colorMap.forEach(function(mapping) {
                 if (normalizedRgbMatches(bgColor, mapping.oldHex)) {
-                  const tableStartIndex = el.startIndex !== undefined ? el.startIndex : 0;
                   requests.push({
                     updateTableCellStyle: {
-                      tableRange: {
-                        tableCellLocation: {
-                          tableStartLocation: { index: tableStartIndex, segmentId: segmentId },
-                          rowIndex:           rowIndex,
-                          columnIndex:        colIndex,
-                        },
-                        rowSpan:    1,
-                        columnSpan: 1,
-                      },
+                      tableRange:     tableRange,
                       tableCellStyle: {
-                        backgroundColor: {
-                          color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                        },
+                        backgroundColor: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } },
                       },
                       fields: "backgroundColor",
                     },
@@ -216,6 +229,31 @@ function buildDocTableCellColorRequests(doc, colorMap) {
                 }
               });
             }
+
+            // --- Border colors (one request per side that has a matching color) ---
+            BORDER_SIDES.forEach(function(side) {
+              const borderRgb = getBorderRgb(cell, side);
+              if (!borderRgb) return;
+
+              colorMap.forEach(function(mapping) {
+                if (normalizedRgbMatches(borderRgb, mapping.oldHex)) {
+                  const newBorder = Object.assign(
+                    {},
+                    cell.tableCellStyle[side],
+                    { color: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } } }
+                  );
+                  const stylePatch = {};
+                  stylePatch[side] = newBorder;
+                  requests.push({
+                    updateTableCellStyle: {
+                      tableRange:     tableRange,
+                      tableCellStyle: stylePatch,
+                      fields:         side + ".color",
+                    },
+                  });
+                }
+              });
+            });
 
             // Recurse into nested tables
             walkTableCells(cell.content, segmentId);
