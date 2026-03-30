@@ -879,6 +879,78 @@ function logDocImages(docId) {
 }
 
 // ---------------------------------------------------------------------------
+// logDocTableStyles (diagnostic utility)
+// ---------------------------------------------------------------------------
+
+/**
+ * Diagnostic utility — logs every table cell border and background color
+ * found in the document, so you can see what values are actually stored
+ * and whether getDocBorderRgb is returning the right values.
+ *
+ * Run this on a document whose borders weren't updated to understand what
+ * color format is used (rgbColor vs themeColor vs absent).
+ *
+ * @param {string} docId
+ */
+function logDocTableStyles(docId) {
+  const doc = Docs.Documents.get(docId);
+  const BORDER_SIDES = ["borderLeft", "borderRight", "borderTop", "borderBottom"];
+
+  function rgbToHex(rgb) {
+    if (!rgb) return "(null)";
+    var r = Math.round((rgb.red   || 0) * 255).toString(16).padStart(2, "0");
+    var g = Math.round((rgb.green || 0) * 255).toString(16).padStart(2, "0");
+    var b = Math.round((rgb.blue  || 0) * 255).toString(16).padStart(2, "0");
+    return "#" + r + g + b;
+  }
+
+  var tableIndex = 0;
+
+  function processTable(el) {
+    if (!el.table) return;
+    tableIndex++;
+    Logger.log("=== Table %d (startIndex: %s) ===", tableIndex, el.startIndex);
+
+    (el.table.tableRows || []).forEach(function(row, rowIdx) {
+      (row.tableCells || []).forEach(function(cell, colIdx) {
+        var ts = cell.tableCellStyle;
+        if (!ts) {
+          Logger.log("  [%d,%d] — no tableCellStyle", rowIdx, colIdx);
+          return;
+        }
+
+        // Background
+        var bgRgb = ts.backgroundColor && ts.backgroundColor.color && ts.backgroundColor.color.rgbColor;
+        var bgTheme = ts.backgroundColor && ts.backgroundColor.color && ts.backgroundColor.color.themeColor;
+        Logger.log(
+          "  [%d,%d] bg: %s",
+          rowIdx, colIdx,
+          bgRgb ? rgbToHex(bgRgb) : (bgTheme ? "themeColor:" + bgTheme : "(none)")
+        );
+
+        // Borders
+        BORDER_SIDES.forEach(function(side) {
+          if (!ts[side]) return;
+          var borderColor = ts[side].color && ts[side].color.color;
+          var bRgb   = borderColor && borderColor.rgbColor;
+          var bTheme = borderColor && borderColor.themeColor;
+          var colorLabel = bRgb ? rgbToHex(bRgb) : (bTheme ? "themeColor:" + bTheme : "(none/transparent)");
+          Logger.log(
+            "  [%d,%d] %s: %s  width:%s  dash:%s",
+            rowIdx, colIdx, side, colorLabel,
+            (ts[side].width && ts[side].width.magnitude) || "?",
+            ts[side].dashStyle || "?"
+          );
+        });
+      });
+    });
+  }
+
+  walkDocContent(doc.body ? doc.body.content : null, "", processTable);
+  Logger.log("Done. Total tables found: %d", tableIndex);
+}
+
+// ---------------------------------------------------------------------------
 // Step 11 — buildDocLogoRequests
 // ---------------------------------------------------------------------------
 
