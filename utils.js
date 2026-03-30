@@ -40,9 +40,9 @@ const LOGO_CONFIG = {
   titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
   docsLogo: {
     oldSourceUri: null, // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
-    minWidthPt:   40,   // Size bounds fallback — adjust based on logDocImages output
+    minWidthPt:   20,   // Size bounds fallback — adjust based on logDocImages output
     maxWidthPt:   200,
-    minHeightPt:  20,
+    minHeightPt:  10,
     maxHeightPt:  100,
   },
 };

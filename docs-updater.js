@@ -327,14 +327,24 @@ function replaceDocColors(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
 
-  const nsLookup = buildNamedStyleLookup(doc);
-  const requests = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
-  if (requests.length === 0) {
+  const nsLookup      = buildNamedStyleLookup(doc);
+  const inlineReqs    = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
+  const nsReqs        = buildDocNamedStyleColorRequests(doc, COLOR_MAP);
+
+  if (inlineReqs.length === 0 && nsReqs.length === 0) {
     Logger.log("  replaceDocColors: no color changes for %s", docId);
     return;
   }
-  Docs.Documents.batchUpdate({ requests: requests }, docId);
-  Logger.log("  replaceDocColors: %d requests submitted for %s", requests.length, docId);
+
+  if (inlineReqs.length > 0) {
+    Docs.Documents.batchUpdate({ requests: inlineReqs }, docId);
+    Logger.log("  replaceDocColors: %d inline requests submitted for %s", inlineReqs.length, docId);
+  }
+
+  if (nsReqs.length > 0) {
+    batchUpdateDocWithUrlFetch(docId, nsReqs);
+    Logger.log("  replaceDocColors: %d named-style requests submitted for %s", nsReqs.length, docId);
+  }
 }
 
 // ---------------------------------------------------------------------------
