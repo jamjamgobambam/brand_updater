@@ -237,19 +237,18 @@ function buildDocTableCellColorRequests(doc, colorMap) {
           cell.tableCellStyle.backgroundColor.color.rgbColor;
 
         if (bgColor) {
-          colorMap.forEach(function(mapping) {
-            if (normalizedRgbMatches(bgColor, mapping.oldHex)) {
-              requests.push({
-                updateTableCellStyle: {
-                  tableRange:     tableRange,
-                  tableCellStyle: {
-                    backgroundColor: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } },
-                  },
-                  fields: "backgroundColor",
+          var bgNewHex = findColorMapping(bgColor, colorMap, COLOR_DISTANCE_THRESHOLD);
+          if (bgNewHex) {
+            requests.push({
+              updateTableCellStyle: {
+                tableRange:     tableRange,
+                tableCellStyle: {
+                  backgroundColor: { color: { rgbColor: hexToNormalizedRgb(bgNewHex) } },
                 },
-              });
-            }
-          });
+                fields: "backgroundColor",
+              },
+            });
+          }
         }
 
         // --- Border colors (one request per side that has a matching color) ---
@@ -257,24 +256,23 @@ function buildDocTableCellColorRequests(doc, colorMap) {
           const borderRgb = getBorderRgb(cell, side);
           if (!borderRgb) return;
 
-          colorMap.forEach(function(mapping) {
-            if (normalizedRgbMatches(borderRgb, mapping.oldHex)) {
-              const newBorder = Object.assign(
-                {},
-                cell.tableCellStyle[side],
-                { color: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } } }
-              );
-              const stylePatch = {};
-              stylePatch[side] = newBorder;
-              requests.push({
-                updateTableCellStyle: {
-                  tableRange:     tableRange,
-                  tableCellStyle: stylePatch,
-                  fields:         side + ".color",
-                },
-              });
-            }
-          });
+          var borderNewHex = findColorMapping(borderRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+          if (borderNewHex) {
+            const newBorder = Object.assign(
+              {},
+              cell.tableCellStyle[side],
+              { color: { color: { rgbColor: hexToNormalizedRgb(borderNewHex) } } }
+            );
+            const stylePatch = {};
+            stylePatch[side] = newBorder;
+            requests.push({
+              updateTableCellStyle: {
+                tableRange:     tableRange,
+                tableCellStyle: stylePatch,
+                fields:         side + ".color",
+              },
+            });
+          }
         });
       });
     });
@@ -337,7 +335,7 @@ function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
           nsStyle.foregroundColor &&
           nsStyle.foregroundColor.color &&
           nsStyle.foregroundColor.color.rgbColor;
-        if (nsRgb && colorMap.some(function(m) { return normalizedRgbMatches(nsRgb, m.oldHex); })) {
+        if (nsRgb && findColorMapping(nsRgb, colorMap, COLOR_DISTANCE_THRESHOLD) !== null) {
           effectiveRgb = nsRgb;
         } else {
           // Level 3: NORMAL_TEXT proxy (catches theme-inherited heading colors
@@ -348,8 +346,33 @@ function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
 
       if (!effectiveRgb) return;
 
-      colorMap.forEach(function(mapping) {
-        if (normalizedRgbMatches(effectiveRgb, mapping.oldHex)) {
+      var fgNewHex = findColorMapping(effectiveRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+      if (fgNewHex) {
+        requests.push({
+          updateTextStyle: {
+            range: {
+              startIndex: run.startIndex,
+              endIndex:   run.endIndex,
+              segmentId:  segment.segmentId,
+            },
+            textStyle: {
+              foregroundColor: {
+                color: { rgbColor: hexToNormalizedRgb(fgNewHex) },
+              },
+            },
+            fields: "foregroundColor",
+          },
+        });
+      }
+
+      // Text highlight (textStyle.backgroundColor)
+      const highlightRgb =
+        run.style.backgroundColor &&
+        run.style.backgroundColor.color &&
+        run.style.backgroundColor.color.rgbColor;
+      if (highlightRgb) {
+        var hlNewHex = findColorMapping(highlightRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+        if (hlNewHex) {
           requests.push({
             updateTextStyle: {
               range: {
@@ -358,41 +381,14 @@ function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
                 segmentId:  segment.segmentId,
               },
               textStyle: {
-                foregroundColor: {
-                  color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+                backgroundColor: {
+                  color: { rgbColor: hexToNormalizedRgb(hlNewHex) },
                 },
               },
-              fields: "foregroundColor",
+              fields: "backgroundColor",
             },
           });
         }
-      });
-
-      // Text highlight (textStyle.backgroundColor)
-      const highlightRgb =
-        run.style.backgroundColor &&
-        run.style.backgroundColor.color &&
-        run.style.backgroundColor.color.rgbColor;
-      if (highlightRgb) {
-        colorMap.forEach(function(mapping) {
-          if (normalizedRgbMatches(highlightRgb, mapping.oldHex)) {
-            requests.push({
-              updateTextStyle: {
-                range: {
-                  startIndex: run.startIndex,
-                  endIndex:   run.endIndex,
-                  segmentId:  segment.segmentId,
-                },
-                textStyle: {
-                  backgroundColor: {
-                    color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                  },
-                },
-                fields: "backgroundColor",
-              },
-            });
-          }
-        });
       }
     });
   });
@@ -452,23 +448,22 @@ function buildDocNamedStyleColorRequests(doc, colorMap) {
 
     if (!effectiveColor) return;
 
-    colorMap.forEach(function(mapping) {
-      if (normalizedRgbMatches(effectiveColor, mapping.oldHex)) {
-        requests.push({
-          updateNamedStyle: {
-            namedStyle: {
-              namedStyleType: ns.namedStyleType,
-              textStyle: {
-                foregroundColor: {
-                  color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                },
+    var nsColorNewHex = findColorMapping(effectiveColor, colorMap, COLOR_DISTANCE_THRESHOLD);
+    if (nsColorNewHex) {
+      requests.push({
+        updateNamedStyle: {
+          namedStyle: {
+            namedStyleType: ns.namedStyleType,
+            textStyle: {
+              foregroundColor: {
+                color: { rgbColor: hexToNormalizedRgb(nsColorNewHex) },
               },
             },
-            fields: "textStyle.foregroundColor",
           },
-        });
-      }
-    });
+          fields: "textStyle.foregroundColor",
+        },
+      });
+    }
   });
 
   return requests;
@@ -499,28 +494,27 @@ function buildDocParagraphShadingRequests(segments, colorMap) {
         el.paragraph.paragraphStyle.shading.backgroundColor.color &&
         el.paragraph.paragraphStyle.shading.backgroundColor.color.rgbColor;
       if (shading) {
-        colorMap.forEach(function(mapping) {
-          if (normalizedRgbMatches(shading, mapping.oldHex)) {
-            var startIndex = el.startIndex !== undefined ? el.startIndex : 0;
-            requests.push({
-              updateParagraphStyle: {
-                range: {
-                  startIndex: startIndex,
-                  endIndex:   el.endIndex,
-                  segmentId:  segmentId,
-                },
-                paragraphStyle: {
-                  shading: {
-                    backgroundColor: {
-                      color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                    },
+        var shadingNewHex = findColorMapping(shading, colorMap, COLOR_DISTANCE_THRESHOLD);
+        if (shadingNewHex) {
+          var startIndex = el.startIndex !== undefined ? el.startIndex : 0;
+          requests.push({
+            updateParagraphStyle: {
+              range: {
+                startIndex: startIndex,
+                endIndex:   el.endIndex,
+                segmentId:  segmentId,
+              },
+              paragraphStyle: {
+                shading: {
+                  backgroundColor: {
+                    color: { rgbColor: hexToNormalizedRgb(shadingNewHex) },
                   },
                 },
-                fields: "shading.backgroundColor",
               },
-            });
-          }
-        });
+              fields: "shading.backgroundColor",
+            },
+          });
+        }
       }
     });
   });
@@ -545,22 +539,18 @@ function buildDocPageBackgroundRequest(doc, colorMap) {
 
   if (!bgRgb) return [];
 
-  var requests = [];
-  colorMap.forEach(function(mapping) {
-    if (normalizedRgbMatches(bgRgb, mapping.oldHex)) {
-      requests.push({
-        updateDocumentStyle: {
-          documentStyle: {
-            background: {
-              color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-            },
-          },
-          fields: "background.color",
+  var bgNewHex = findColorMapping(bgRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+  if (!bgNewHex) return [];
+  return [{
+    updateDocumentStyle: {
+      documentStyle: {
+        background: {
+          color: { rgbColor: hexToNormalizedRgb(bgNewHex) },
         },
-      });
-    }
-  });
-  return requests;
+      },
+      fields: "background.color",
+    },
+  }];
 }
 
 /**
@@ -653,7 +643,7 @@ function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
         const nsStyle  = namedStyleLookup[run.namedStyleType] || {};
         const nsWff    = nsStyle.weightedFontFamily;
         const nsFamily = nsWff ? nsWff.fontFamily : nsStyle.fontFamily;
-        if (nsFamily && fontMap.some(function(m) { return nsFamily === m.oldFont; })) {
+        if (nsFamily && (fontMap.some(function(m) { return nsFamily === m.oldFont; }) || BRAND_FONTS.indexOf(nsFamily) === -1)) {
           effectiveFamily = nsFamily;
           effectiveWeight = nsWff ? nsWff.weight : 400;
         } else {
@@ -666,8 +656,10 @@ function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
 
       if (!effectiveFamily) return;
 
+      var docFontMatched = false;
       fontMap.forEach(function(mapping) {
         if (effectiveFamily === mapping.oldFont) {
+          docFontMatched = true;
           requests.push({
             updateTextStyle: {
               range: {
@@ -686,6 +678,26 @@ function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
           });
         }
       });
+
+      // Replace any non-brand font not handled by FONT_MAP
+      if (!docFontMatched && BRAND_FONTS.indexOf(effectiveFamily) === -1) {
+        requests.push({
+          updateTextStyle: {
+            range: {
+              startIndex: run.startIndex,
+              endIndex:   run.endIndex,
+              segmentId:  segment.segmentId,
+            },
+            textStyle: {
+              weightedFontFamily: {
+                fontFamily: FALLBACK_FONT,
+                weight:     effectiveWeight || 400,
+              },
+            },
+            fields: "weightedFontFamily",
+          },
+        });
+      }
     });
   });
 
@@ -737,8 +749,10 @@ function buildDocNamedStyleFontRequests(doc, fontMap) {
 
     if (!effectiveFamily) return;
 
+    var nsFontMatched = false;
     fontMap.forEach(function(mapping) {
       if (effectiveFamily === mapping.oldFont) {
+        nsFontMatched = true;
         const weight = wff ? wff.weight
           : (ns.namedStyleType !== "NORMAL_TEXT" && normalTextWff ? normalTextWff.weight : 400);
         requests.push({
@@ -757,6 +771,26 @@ function buildDocNamedStyleFontRequests(doc, fontMap) {
         });
       }
     });
+
+    // Replace any non-brand font not handled by FONT_MAP
+    if (!nsFontMatched && BRAND_FONTS.indexOf(effectiveFamily) === -1) {
+      const weight = wff ? wff.weight
+        : (ns.namedStyleType !== "NORMAL_TEXT" && normalTextWff ? normalTextWff.weight : 400);
+      requests.push({
+        updateNamedStyle: {
+          namedStyle: {
+            namedStyleType: ns.namedStyleType,
+            textStyle: {
+              weightedFontFamily: {
+                fontFamily: FALLBACK_FONT,
+                weight:     weight,
+              },
+            },
+          },
+          fields: "textStyle.weightedFontFamily",
+        },
+      });
+    }
   });
 
   return requests;

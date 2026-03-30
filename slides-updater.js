@@ -38,13 +38,13 @@ function updateMasterThemeColors(presentationId, masters) {
       if (accentIndex !== -1) {
         return {
           type: type,
-          color: hexToNormalizedRgb(accentNewHexes[accentIndex]),
+          color: { rgbColor: hexToNormalizedRgb(accentNewHexes[accentIndex]) },
         };
       }
       if (type === "HYPERLINK" || type === "FOLLOWED_HYPERLINK") {
         return {
           type: type,
-          color: hexToNormalizedRgb(HYPERLINK_NEW_HEX),
+          color: { rgbColor: hexToNormalizedRgb(HYPERLINK_NEW_HEX) },
         };
       }
       // DARK1, DARK2, LIGHT1, LIGHT2 — preserve unchanged
@@ -96,23 +96,22 @@ function buildInlineColorRequests(pages, colorMap) {
       page.pageProperties.pageBackgroundFill.solidFill.color.rgbColor;
 
     if (bgRgb) {
-      colorMap.forEach(function(mapping) {
-        if (normalizedRgbMatches(bgRgb, mapping.oldHex)) {
-          requests.push({
-            updatePageProperties: {
-              objectId: pageId,
-              pageProperties: {
-                pageBackgroundFill: {
-                  solidFill: {
-                    color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                  },
+      var bgNewHex = findColorMapping(bgRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+      if (bgNewHex) {
+        requests.push({
+          updatePageProperties: {
+            objectId: pageId,
+            pageProperties: {
+              pageBackgroundFill: {
+                solidFill: {
+                  color: { rgbColor: hexToNormalizedRgb(bgNewHex) },
                 },
               },
-              fields: "pageBackgroundFill.solidFill.color",
             },
-          });
-        }
-      });
+            fields: "pageBackgroundFill.solidFill.color",
+          },
+        });
+      }
     }
 
     // --- Page elements ---
@@ -129,23 +128,22 @@ function buildInlineColorRequests(pages, colorMap) {
         element.shape.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor;
 
       if (shapeFillRgb) {
-        colorMap.forEach(function(mapping) {
-          if (normalizedRgbMatches(shapeFillRgb, mapping.oldHex)) {
-            requests.push({
-              updateShapeProperties: {
-                objectId: eid,
-                shapeProperties: {
-                  shapeBackgroundFill: {
-                    solidFill: {
-                      color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                    },
+        var shapeFillNewHex = findColorMapping(shapeFillRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+        if (shapeFillNewHex) {
+          requests.push({
+            updateShapeProperties: {
+              objectId: eid,
+              shapeProperties: {
+                shapeBackgroundFill: {
+                  solidFill: {
+                    color: { rgbColor: hexToNormalizedRgb(shapeFillNewHex) },
                   },
                 },
-                fields: "shapeBackgroundFill.solidFill.color",
               },
-            });
-          }
-        });
+              fields: "shapeBackgroundFill.solidFill.color",
+            },
+          });
+        }
       }
 
       // Shape outline
@@ -159,25 +157,24 @@ function buildInlineColorRequests(pages, colorMap) {
         element.shape.shapeProperties.outline.outlineFill.solidFill.color.rgbColor;
 
       if (outlineRgb) {
-        colorMap.forEach(function(mapping) {
-          if (normalizedRgbMatches(outlineRgb, mapping.oldHex)) {
-            requests.push({
-              updateShapeProperties: {
-                objectId: eid,
-                shapeProperties: {
-                  outline: {
-                    outlineFill: {
-                      solidFill: {
-                        color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                      },
+        var outlineNewHex = findColorMapping(outlineRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+        if (outlineNewHex) {
+          requests.push({
+            updateShapeProperties: {
+              objectId: eid,
+              shapeProperties: {
+                outline: {
+                  outlineFill: {
+                    solidFill: {
+                      color: { rgbColor: hexToNormalizedRgb(outlineNewHex) },
                     },
                   },
                 },
-                fields: "outline.outlineFill.solidFill.color",
               },
-            });
-          }
-        });
+              fields: "outline.outlineFill.solidFill.color",
+            },
+          });
+        }
       }
 
       // Text run foreground colors
@@ -196,28 +193,27 @@ function buildInlineColorRequests(pages, colorMap) {
             te.textRun.style.foregroundColor.opaqueColor.rgbColor;
 
           if (!fgRgb) return;
-          colorMap.forEach(function(mapping) {
-            if (normalizedRgbMatches(fgRgb, mapping.oldHex)) {
-              requests.push({
-                updateTextStyle: {
-                  objectId: eid,
-                  textRange: {
-                    type: "FIXED_RANGE",
-                    startIndex: te.startIndex !== undefined ? te.startIndex : 0,
-                    endIndex: te.endIndex,
-                  },
-                  style: {
-                    foregroundColor: {
-                      opaqueColor: {
-                        rgbColor: hexToNormalizedRgb(mapping.newHex),
-                      },
+          var fgNewHex = findColorMapping(fgRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+          if (fgNewHex) {
+            requests.push({
+              updateTextStyle: {
+                objectId: eid,
+                textRange: {
+                  type: "FIXED_RANGE",
+                  startIndex: te.startIndex !== undefined ? te.startIndex : 0,
+                  endIndex: te.endIndex,
+                },
+                style: {
+                  foregroundColor: {
+                    opaqueColor: {
+                      rgbColor: hexToNormalizedRgb(fgNewHex),
                     },
                   },
-                  fields: "foregroundColor",
                 },
-              });
-            }
-          });
+                fields: "foregroundColor",
+              },
+            });
+          }
         });
       }
 
@@ -237,31 +233,30 @@ function buildInlineColorRequests(pages, colorMap) {
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color.rgbColor;
 
             if (!cellRgb) return;
-            colorMap.forEach(function(mapping) {
-              if (normalizedRgbMatches(cellRgb, mapping.oldHex)) {
-                requests.push({
-                  updateTableCellProperties: {
-                    objectId: eid,
-                    tableRange: {
-                      location: {
-                        rowIndex: cell.location.rowIndex,
-                        columnIndex: cell.location.columnIndex,
-                      },
-                      rowSpan: 1,
-                      columnSpan: 1,
+            var cellNewHex = findColorMapping(cellRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+            if (cellNewHex) {
+              requests.push({
+                updateTableCellProperties: {
+                  objectId: eid,
+                  tableRange: {
+                    location: {
+                      rowIndex: cell.location.rowIndex,
+                      columnIndex: cell.location.columnIndex,
                     },
-                    tableCellProperties: {
-                      tableCellBackgroundFill: {
-                        solidFill: {
-                          color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                        },
-                      },
-                    },
-                    fields: "tableCellBackgroundFill.solidFill.color",
+                    rowSpan: 1,
+                    columnSpan: 1,
                   },
-                });
-              }
-            });
+                  tableCellProperties: {
+                    tableCellBackgroundFill: {
+                      solidFill: {
+                        color: { rgbColor: hexToNormalizedRgb(cellNewHex) },
+                      },
+                    },
+                  },
+                  fields: "tableCellBackgroundFill.solidFill.color",
+                },
+              });
+            }
           });
         });
       }
@@ -276,23 +271,22 @@ function buildInlineColorRequests(pages, colorMap) {
         element.line.lineProperties.lineFill.solidFill.color.rgbColor;
 
       if (lineRgb) {
-        colorMap.forEach(function(mapping) {
-          if (normalizedRgbMatches(lineRgb, mapping.oldHex)) {
-            requests.push({
-              updateLineProperties: {
-                objectId: eid,
-                lineProperties: {
-                  lineFill: {
-                    solidFill: {
-                      color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                    },
+        var lineNewHex = findColorMapping(lineRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+        if (lineNewHex) {
+          requests.push({
+            updateLineProperties: {
+              objectId: eid,
+              lineProperties: {
+                lineFill: {
+                  solidFill: {
+                    color: { rgbColor: hexToNormalizedRgb(lineNewHex) },
                   },
                 },
-                fields: "lineFill.solidFill.color",
               },
-            });
-          }
-        });
+              fields: "lineFill.solidFill.color",
+            },
+          });
+        }
       }
     });
   });
@@ -366,8 +360,10 @@ function buildFontRequests(pages, fontMap) {
         const fontFamily = wff ? wff.fontFamily : style.fontFamily;
         if (!fontFamily) return; // null means inheriting — leave untouched
 
+        var fontMatched = false;
         fontMap.forEach(function(mapping) {
           if (fontFamily === mapping.oldFont) {
+            fontMatched = true;
             const existingWeight = wff ? wff.weight : 400;
             requests.push({
               updateTextStyle: {
@@ -388,6 +384,28 @@ function buildFontRequests(pages, fontMap) {
             });
           }
         });
+
+        // Replace any non-brand font not already handled by FONT_MAP
+        if (!fontMatched && BRAND_FONTS.indexOf(fontFamily) === -1) {
+          const existingWeight = wff ? wff.weight : 400;
+          requests.push({
+            updateTextStyle: {
+              objectId: eid,
+              textRange: {
+                type: "FIXED_RANGE",
+                startIndex: te.startIndex !== undefined ? te.startIndex : 0,
+                endIndex: te.endIndex,
+              },
+              style: {
+                weightedFontFamily: {
+                  fontFamily: FALLBACK_FONT,
+                  weight: existingWeight,
+                },
+              },
+              fields: "weightedFontFamily",
+            },
+          });
+        }
       });
     });
   });
@@ -429,6 +447,114 @@ function replaceFonts(presentationId, cachedPresentation) {
     const chunk = requests.slice(i, i + BATCH_SIZE);
     Slides.Presentations.batchUpdate({ requests: chunk }, presentationId);
   }
+}
+
+// ---------------------------------------------------------------------------
+// logPresentationColors (diagnostic utility)
+// ---------------------------------------------------------------------------
+
+/**
+ * Diagnostic utility — logs every inline RGB color found in the presentation
+ * alongside its Euclidean distance to each old brand color in COLOR_MAP.
+ * Run this on a presentation whose colors weren't changed to understand what
+ * values are actually stored and whether the distance threshold is too low.
+ *
+ * Also logs the master theme color scheme so you can confirm whether shapes
+ * use theme-referenced colors (handled by updateMasterThemeColors) or inline
+ * RGB values (handled by buildInlineColorRequests).
+ *
+ * @param {string} presentationId
+ */
+function logPresentationColors(presentationId) {
+  const presentation = getPresentation(presentationId);
+
+  // --- Master theme color scheme ---
+  Logger.log("=== MASTER THEME COLOR SCHEME ===");
+  (presentation.masters || []).forEach(function(master) {
+    const colors =
+      master.pageProperties &&
+      master.pageProperties.colorScheme &&
+      master.pageProperties.colorScheme.colors;
+    if (!colors) return;
+    colors.forEach(function(entry) {
+      const c = entry.color;
+      const rgb = c && c.rgbColor;
+      if (rgb) {
+        const hex = "#" +
+          Math.round((rgb.red   || 0) * 255).toString(16).padStart(2, "0") +
+          Math.round((rgb.green || 0) * 255).toString(16).padStart(2, "0") +
+          Math.round((rgb.blue  || 0) * 255).toString(16).padStart(2, "0");
+        Logger.log("  %s → %s (rgbColor)", entry.type, hex);
+      } else if (c && c.themeColor) {
+        Logger.log("  %s → themeColor:%s", entry.type, c.themeColor);
+      }
+    });
+  });
+
+  // --- Inline RGB colors ---
+  Logger.log("=== INLINE RGB COLORS ===");
+  const allPages = [].concat(
+    presentation.masters  || [],
+    presentation.layouts  || [],
+    presentation.slides   || []
+  );
+
+  var found = 0;
+  allPages.forEach(function(page) {
+    var pageLabel = (page.pageProperties && page.pageProperties.name) || page.objectId;
+
+    function logRgb(rgb, location) {
+      if (!rgb) return;
+      found++;
+      const hex = "#" +
+        Math.round((rgb.red   || 0) * 255).toString(16).padStart(2, "0") +
+        Math.round((rgb.green || 0) * 255).toString(16).padStart(2, "0") +
+        Math.round((rgb.blue  || 0) * 255).toString(16).padStart(2, "0");
+      var closest = null, closestDist = Infinity;
+      COLOR_MAP.forEach(function(m) {
+        var d = colorDistance(rgb, m.oldHex);
+        if (d < closestDist) { closestDist = d; closest = m.oldHex; }
+      });
+      var withinThreshold = closestDist <= COLOR_DISTANCE_THRESHOLD;
+      Logger.log(
+        "  [%s] %s — hex:%s | closest old brand color:%s | dist:%.1f | within threshold:%s",
+        pageLabel, location, hex, closest, closestDist, withinThreshold
+      );
+    }
+
+    var bgRgb =
+      page.pageProperties &&
+      page.pageProperties.pageBackgroundFill &&
+      page.pageProperties.pageBackgroundFill.solidFill &&
+      page.pageProperties.pageBackgroundFill.solidFill.color &&
+      page.pageProperties.pageBackgroundFill.solidFill.color.rgbColor;
+    logRgb(bgRgb, "page background");
+
+    (page.pageElements || []).forEach(function(el) {
+      var fillRgb =
+        el.shape && el.shape.shapeProperties &&
+        el.shape.shapeProperties.shapeBackgroundFill &&
+        el.shape.shapeProperties.shapeBackgroundFill.solidFill &&
+        el.shape.shapeProperties.shapeBackgroundFill.solidFill.color &&
+        el.shape.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor;
+      logRgb(fillRgb, "shape fill " + el.objectId);
+
+      var fillTheme =
+        el.shape && el.shape.shapeProperties &&
+        el.shape.shapeProperties.shapeBackgroundFill &&
+        el.shape.shapeProperties.shapeBackgroundFill.solidFill &&
+        el.shape.shapeProperties.shapeBackgroundFill.solidFill.color &&
+        el.shape.shapeProperties.shapeBackgroundFill.solidFill.color.themeColor;
+      if (fillTheme) {
+        Logger.log("  [%s] shape fill %s — themeColor:%s (handled by master theme update)", pageLabel, el.objectId, fillTheme);
+      }
+    });
+  });
+
+  if (found === 0) {
+    Logger.log("  (no inline rgbColor fills found — shapes likely use theme color references)");
+  }
+  Logger.log("=== DONE (found %d inline RGB colors) ===", found);
 }
 
 // ---------------------------------------------------------------------------

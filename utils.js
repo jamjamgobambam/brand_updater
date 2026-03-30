@@ -27,6 +27,25 @@ const FONT_MAP = [
 ];
 
 /**
+ * Font families that are always preserved (never replaced by the fallback).
+ * Poppins and Figtree are handled separately via FONT_MAP (→ Lexend) and
+ * are intentionally excluded here so the fallback path is never needed for them.
+ * Any explicit font NOT in this list and NOT in FONT_MAP will be replaced with FALLBACK_FONT.
+ */
+const BRAND_FONTS = ["Short Stack", "Lexend"];
+
+/** Replacement font for any non-brand explicit font. */
+const FALLBACK_FONT = "Lexend";
+
+/**
+ * Euclidean RGB distance threshold (0–255 scale) for near-color matching.
+ * Colors within this distance of an old or new brand color will be replaced.
+ * 40 ≈ 16% per channel — covers shade variations that are visually the same
+ * brand color but stored with slightly different values.
+ */
+const COLOR_DISTANCE_THRESHOLD = 40;
+
+/**
  * Logo detection config.
  * newLogoFileId: Google Drive file ID of the replacement logo.
  *   The file must be shared as "Anyone with the link can view".
@@ -92,6 +111,53 @@ function normalizedRgbMatches(apiRgb, targetHex, tolerance) {
     Math.abs((apiRgb.green || 0) - target.green) <= tol &&
     Math.abs((apiRgb.blue  || 0) - target.blue)  <= tol
   );
+}
+
+/**
+ * Computes the Euclidean distance between an API rgbColor object and a target
+ * hex color in 0–255 RGB space.
+ * @param {{ red?: number, green?: number, blue?: number }} apiRgb
+ * @param {string} targetHex  Six-digit hex color string.
+ * @returns {number}  Distance in 0–255 space; Infinity if apiRgb is falsy.
+ */
+function colorDistance(apiRgb, targetHex) {
+  if (!apiRgb) return Infinity;
+  var target = hexToNormalizedRgb(targetHex);
+  var dr = ((apiRgb.red   || 0) - target.red)   * 255;
+  var dg = ((apiRgb.green || 0) - target.green) * 255;
+  var db = ((apiRgb.blue  || 0) - target.blue)  * 255;
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+/**
+ * Finds the replacement hex for an API rgbColor by range-matching against
+ * colorMap entries using Euclidean distance in 0–255 RGB space.
+ *
+ * Matching priority:
+ *   1. Within `threshold` of an OLD brand color → returns that entry's newHex.
+ *   2. Within `threshold` of a NEW brand color  → snaps to that exact newHex.
+ *
+ * @param {{ red?: number, green?: number, blue?: number }} apiRgb
+ * @param {Object[]} colorMap   Array of { oldHex, newHex } pairs.
+ * @param {number}   [threshold=COLOR_DISTANCE_THRESHOLD]
+ * @returns {string|null}  newHex to use, or null if no match.
+ */
+function findColorMapping(apiRgb, colorMap, threshold) {
+  if (!apiRgb) return null;
+  var thr = threshold !== undefined ? threshold : COLOR_DISTANCE_THRESHOLD;
+  // Pass 1: near an old brand color
+  for (var i = 0; i < colorMap.length; i++) {
+    if (colorDistance(apiRgb, colorMap[i].oldHex) <= thr) {
+      return colorMap[i].newHex;
+    }
+  }
+  // Pass 2: near a new brand color — snap to exact new value
+  for (var j = 0; j < colorMap.length; j++) {
+    if (colorDistance(apiRgb, colorMap[j].newHex) <= thr) {
+      return colorMap[j].newHex;
+    }
+  }
+  return null;
 }
 
 /**
