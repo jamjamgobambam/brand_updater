@@ -141,9 +141,12 @@ function traverseContentArray(contentArray, callback) {
  * @param {Object[]} requests  Array of Docs API request objects (camelCase).
  */
 function batchUpdateDocWithUrlFetch(docId, requests) {
+  // Drop any null / undefined / empty-object entries that would cause a 400.
+  var clean = requests.filter(function(r) { return r && typeof r === "object" && Object.keys(r).length > 0; });
+  if (clean.length === 0) return;
   var token   = ScriptApp.getOAuthToken();
   var url     = "https://docs.googleapis.com/v1/documents/" + docId + ":batchUpdate";
-  var payload = JSON.stringify({ requests: requests });
+  var payload = JSON.stringify({ requests: clean });
   var response = UrlFetchApp.fetch(url, {
     method:             "post",
     contentType:        "application/json",
@@ -155,6 +158,82 @@ function batchUpdateDocWithUrlFetch(docId, requests) {
   if (code !== 200) {
     throw new Error("batchUpdate (REST) failed (" + code + "): " + response.getContentText());
   }
+}
+
+// ---------------------------------------------------------------------------
+// buildDocTableCellColorRequests
+// ---------------------------------------------------------------------------
+
+/**
+ * Walks all tables in all segments and builds updateTableCellStyle requests
+ * for every cell whose background color matches an entry in colorMap.
+ *
+ * Must be sent via batchUpdateDocWithUrlFetch (REST) because the Apps Script
+ * Advanced Service does not support updateTableCellStyle.
+ *
+ * @param {Object}   doc       Full document from Docs.Documents.get().
+ * @param {Object[]} colorMap  Array of { oldHex, newHex } entries.
+ * @returns {Object[]}         Array of updateTableCellStyle request objects.
+ */
+function buildDocTableCellColorRequests(doc, colorMap) {
+  const requests = [];
+
+  function walkTableCells(contentArray, segmentId) {
+    if (!contentArray) return;
+    contentArray.forEach(function(el) {
+      if (el.table) {
+        (el.table.tableRows || []).forEach(function(row, rowIndex) {
+          (row.tableCells || []).forEach(function(cell, colIndex) {
+            const bgColor =
+              cell.tableCellStyle &&
+              cell.tableCellStyle.backgroundColor &&
+              cell.tableCellStyle.backgroundColor.color &&
+              cell.tableCellStyle.backgroundColor.color.rgbColor;
+
+            if (bgColor) {
+              colorMap.forEach(function(mapping) {
+                if (normalizedRgbMatches(bgColor, mapping.oldHex)) {
+                  const tableStartIndex = el.startIndex;
+                  requests.push({
+                    updateTableCellStyle: {
+                      tableRange: {
+                        tableCellLocation: {
+                          tableStartLocation: { index: tableStartIndex, segmentId: segmentId },
+                          rowIndex:           rowIndex,
+                          columnIndex:        colIndex,
+                        },
+                        rowSpan:    1,
+                        columnSpan: 1,
+                      },
+                      tableCellStyle: {
+                        backgroundColor: {
+                          color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+                        },
+                      },
+                      fields: "backgroundColor",
+                    },
+                  });
+                }
+              });
+            }
+
+            // Recurse into nested tables
+            walkTableCells(cell.content, segmentId);
+          });
+        });
+      }
+    });
+  }
+
+  if (doc.body) walkTableCells(doc.body.content, "");
+  Object.keys(doc.headers || {}).forEach(function(id) {
+    walkTableCells(doc.headers[id].content, id);
+  });
+  Object.keys(doc.footers || {}).forEach(function(id) {
+    walkTableCells(doc.footers[id].content, id);
+  });
+
+  return requests;
 }
 
 // ---------------------------------------------------------------------------
@@ -330,8 +409,9 @@ function replaceDocColors(docId) {
   const nsLookup      = buildNamedStyleLookup(doc);
   const inlineReqs    = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
   const nsReqs        = buildDocNamedStyleColorRequests(doc, COLOR_MAP);
+  const cellReqs      = buildDocTableCellColorRequests(doc, COLOR_MAP);
 
-  if (inlineReqs.length === 0 && nsReqs.length === 0) {
+  if (inlineReqs.length === 0 && nsReqs.length === 0 && cellReqs.length === 0) {
     Logger.log("  replaceDocColors: no color changes for %s", docId);
     return;
   }
@@ -341,9 +421,13 @@ function replaceDocColors(docId) {
     Logger.log("  replaceDocColors: %d inline requests submitted for %s", inlineReqs.length, docId);
   }
 
-  if (nsReqs.length > 0) {
-    batchUpdateDocWithUrlFetch(docId, nsReqs);
-    Logger.log("  replaceDocColors: %d named-style requests submitted for %s", nsReqs.length, docId);
+  // Named-style and table-cell requests must go via REST (Advanced Service
+  // wrapper does not support updateNamedStyle or updateTableCellStyle).
+  const restReqs = nsReqs.concat(cellReqs);
+  if (restReqs.length > 0) {
+    batchUpdateDocWithUrlFetch(docId, restReqs);
+    Logger.log("  replaceDocColors: %d REST requests submitted for %s (named-style: %d, cell-bg: %d)",
+      restReqs.length, docId, nsReqs.length, cellReqs.length);
   }
 }
 
