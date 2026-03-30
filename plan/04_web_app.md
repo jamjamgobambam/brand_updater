@@ -29,12 +29,12 @@ Add to `enabledAdvancedServices`:
 
 Also enable it in the Apps Script cloud editor → **Services panel** (manual step — required alongside the manifest entry).
 
-### Step 2 — `traverseContent(contentArray, callback)`
+### Step 2 — `traverseContentArray(contentArray, callback)`
 
 Recursively walks a Docs content array (body, header, or footer). Content items
 can be paragraphs or tables; tables contain rows → cells, each with their own
-content array. Calls `callback({ startIndex, endIndex, style })` for every
-`textRun`.
+content array. Calls `callback({ startIndex, endIndex, style, namedStyleType })` for every
+`textRun`. Note the function is named `traverseContentArray` in the implementation (not `traverseContent`).
 
 ### Step 3 — `buildDocColorRequests(contentArrays, colorMap)`
 
@@ -50,29 +50,19 @@ Same traversal as Step 3. Checks `weightedFontFamily.fontFamily` (preferred) or
 from Named Style — leave untouched). Returns `updateTextStyle` request objects
 preserving font weight.
 
-### Step 5 — `buildDocLogoRequests(doc, config)`
+### Step 5 — `buildDocLogoRequests(doc, newLogoUrl, dryRun)`
 
-Searches `doc.inlineObjects` (a map of objectId → inlineObject) for embedded
-images whose `sourceUri` matches the old logo URL pattern or whose size falls
-within configured bounds. Returns `updateInlineObjectProperties` requests that
-patch `sourceUri` to the new logo Drive URL.
+Implemented as described in Plan 03 Step 11 (delete + re-insert pairs). Finds
+all logo inline objects matching `LOGO_CONFIG.docsLogo` criteria, builds a
+`deleteContentRange` + `insertInlineImage` pair per match, and returns them
+sorted in reverse index order.
 
-> **Known limitation:** `updateInlineObjectProperties.sourceUri` updates only
-> the link metadata, not the embedded pixel data. Full pixel re-embedding
-> requires a delete-then-insert approach (complex due to shifting indices) and
-> is a stretch goal for a later phase.
+The `newLogoUrl` parameter must be a direct, publicly accessible image URL
+(not a Drive redirect URL). Set `LOGO_CONFIG.docsLogo.newLogoUrl` before running.
 
-### Step 6 — `updateDocsDocument(documentId)`
+### Step 6 — `updateDocsDocument(docId, dryRun)`
 
-Orchestrator function for a single document:
-
-1. `Docs.Documents.get(documentId, { includeTabsContent: true })` (v1 API)
-2. Collect `contentArrays`:
-   - `[doc.body.content]`
-   - All `doc.headers` values → `.content`
-   - All `doc.footers` values → `.content`
-3. Build color, font, and logo requests
-4. `Docs.Documents.batchUpdate({ requests: [...colorReqs, ...fontReqs, ...logoReqs] }, documentId)`
+Orchestrator function for a single document (see Plan 03 Step 13 for full detail). The `dryRun` parameter is passed through to `replaceDocLogos`.
 
 ### Step 7 — `updateAllDocsInFolder(folderId)` (in `main.js`)
 
@@ -133,9 +123,11 @@ Entry point for HTTP GET requests to the web app URL. Serves `index.html`:
 ```js
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('index')
-    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.SAMEORIGIN);
+    .setTitle('Brand Updater');
 }
 ```
+
+> **Note:** The planned `.setXFrameOptionsMode(HtmlService.XFrameOptionsMode.SAMEORIGIN)` clickjacking protection is not in the current implementation. It can be added as a follow-up.
 
 ---
 
@@ -254,9 +246,9 @@ clasp open-web-app
 | `docs-updater.js` | Create |
 | `webapp.js` | Create |
 | `index.html` | Create |
-| `appsscript.json` | Update — add Docs service |
+| `appsscript.json` | Update — add Docs service + `script.external_request` OAuth scope |
 | `main.js` | Update — add `updateAllDocsInFolder()` |
-| `utils.js` | No changes — reused as-is |
+| `utils.js` | Update — add `docsLogo` key to `LOGO_CONFIG` |
 | `slides-updater.js` | No changes — reused as-is |
 
 ---
@@ -284,9 +276,16 @@ clasp open-web-app
    interrupted. A follow-up improvement would split processing across
    time-based triggers.
 
-2. **Docs logo replacement** — `updateInlineObjectProperties.sourceUri` updates
-   only the embedded image's link metadata; the pixel data shown in the
-   document is not changed. True re-embedding requires deleting the existing
-   inline object and inserting a new one at the same character offset, which is
-   complex because all subsequent indices shift. This is a stretch goal for a
-   later phase.
+2. **Dry-run has no effect on Docs logo replacement from the web app** —
+   `processUrl` in `webapp.js` calls `updateDocsDocument(item.id)` without
+   passing `isDryRun`, so the dry-run checkbox only affects Slides logo
+   replacement. Docs colors and fonts are always applied regardless of the
+   checkbox (they have no dry-run mode). To enable dry-run for Docs logos
+   via the web app, change the call to
+   `updateDocsDocument(item.id, isDryRun)`.
+
+3. **UI dynamic mode indicator** — When the dry-run checkbox is unchecked,
+   the button label changes from "Preview Changes" to "Apply Changes" and
+   an amber warning reads "Live mode — matching logos will be replaced in
+   your files. This cannot be undone." This behavior is not described in
+   the original plan but is fully implemented in `index.html`.

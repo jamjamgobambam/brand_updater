@@ -10,7 +10,7 @@ Update Google Docs documents by:
 
 Uses the **Advanced Docs REST API** (`Docs.Documents.batchUpdate()`). A single-file function handles one document; a batch wrapper handles multiple from a Drive folder.
 
-> **Named Styles limitation:** The Docs REST API has no `updateNamedStyles` request — it is not possible to programmatically change Named Style defaults (e.g., Heading 1, Normal Text). Only explicit inline overrides applied on top of Named Styles can be updated. Named Style defaults in template documents must be updated manually.
+> **Named Styles:** The Docs REST API does support `updateNamedStyle` requests. Helper functions `buildDocNamedStyleColorRequests` and `buildDocNamedStyleFontRequests` are implemented in `docs-updater.js` but are **not currently called** — Named Style updates are disabled by default. Text runs that inherit color or font from their Named Style are still handled by a three-level probe in `buildDocColorRequests` and `buildDocFontRequests` (see Steps 5 and 7).
 
 ---
 
@@ -147,32 +147,52 @@ Returns array of `updateTextStyle` request objects.
 
 ### Step 6 — `replaceDocColors(docId)`
 
-*Depends on steps 4, 5.*
+*Depends on steps 4, 5 and the additional helpers below.*
 
 - Calls `Docs.Documents.get(docId)` — full document JSON in one read
 - Calls `collectDocContent(document)` to get all segments
-- Calls `buildDocColorRequests(segments, COLOR_MAP)` to build requests
-- If requests are non-empty, submits via `Docs.Documents.batchUpdate(docId, { requests })`
+- Calls `buildNamedStyleLookup(document)` to build the Named Style map
+- Calls `buildDocColorRequests(segments, COLOR_MAP, nsLookup)` — text run foreground + highlight
+- Calls `buildDocTableCellColorRequests(doc, COLOR_MAP)` — table cell background + border colors
+- Calls `buildDocParagraphShadingRequests(segments, COLOR_MAP)` — paragraph shading (`paragraphStyle.shading.backgroundColor`)
+- Calls `buildDocPageBackgroundRequest(doc, COLOR_MAP)` — document page background color
 
-One read, one write — same pattern as the Slides functions. The Docs API rate limits batchUpdate calls per document, so batching all color changes into a single request is both more efficient and less likely to hit quota limits.
+Submits in **two separate API calls**:
+1. **Advanced Service** (`Docs.Documents.batchUpdate`) — text run foreground / highlight + paragraph shading
+2. **REST via `batchUpdateDocWithUrlFetch`** — table cell styles and page background
+
+**Why two paths:** The Apps Script Advanced Service wrapper for Docs does not reliably support `updateTableCellStyle` or `updateDocumentStyle` requests with nested fields — it mis-serialises or silently drops them. Sending those request types directly via `UrlFetchApp` (with the exact camelCase JSON payload the REST API expects) is the only reliable approach.
+
+**Additional helper functions (not in original plan):**
+
+| Function | Purpose |
+|---|---|
+| `buildNamedStyleLookup(document)` | Builds `namedStyleType → textStyle` map; used by the three-level probe in `buildDocColorRequests` and `buildDocFontRequests` |
+| `traverseContentArray(contentArray, callback)` | Recursive content walker; calls callback with `{ startIndex, endIndex, style, namedStyleType }` for each `textRun` |
+| `batchUpdateDocWithUrlFetch(docId, requests)` | Direct REST call via `UrlFetchApp` using the script owner's OAuth token; required for request types the Advanced Service wrapper doesn't handle |
+| `buildDocTableCellColorRequests(doc, colorMap)` | Walks all tables and builds `updateTableCellStyle` requests for cell background and border colors |
+| `buildDocParagraphShadingRequests(segments, colorMap)` | Builds `updateParagraphStyle` requests for paragraph shading background |
+| `buildDocPageBackgroundRequest(doc, colorMap)` | Builds `updateDocumentStyle` request for the document page background color |
+| `buildDocNamedStyleColorRequests(doc, colorMap)` | Builds `updateNamedStyle` color requests — **defined but not currently called** |
+| `buildDocNamedStyleFontRequests(doc, fontMap)` | Builds `updateNamedStyle` font requests — **defined but not currently called** |
 
 ---
 
-### Step 7 — `buildDocFontRequests(segments, fontMap)`
+### Step 7 — `buildDocFontRequests(segments, fontMap, namedStyleLookup)`
 
-Same traversal structure as `buildDocColorRequests`. For each `textRun`:
+For each `textRun` (via `traverseContentArray`), checks the effective font via a **three-level probe**:
 
-- Read `textStyle.weightedFontFamily.fontFamily` (preferred — includes weight)
-- Fall back to `textStyle.fontFamily` if `weightedFontFamily` is absent
-- If either matches an old font name in `fontMap`, build an `updateTextStyle` request with:
-  - `textStyle.weightedFontFamily: { fontFamily: newFont, weight: <existing weight> }`
-  - `fields: "weightedFontFamily"`
+1. **Explicit inline font** — `textRun.textStyle.weightedFontFamily.fontFamily` (preferred, includes weight) or `textRun.textStyle.fontFamily`
+2. **Named Style for the paragraph type** — if no inline font, look up the `namedStyleType` in `namedStyleLookup` and check its `weightedFontFamily.fontFamily`. If that font is in `fontMap`, use it; otherwise fall through
+3. **NORMAL_TEXT Named Style fallback** — use NORMAL_TEXT's font as a proxy for theme-inherited values in heading paragraphs that carry no inline or Named-Style font
+
+On a match at any level, builds an `updateTextStyle` request with:
+- `textStyle.weightedFontFamily: { fontFamily: newFont, weight: <effective weight> }`
+- `fields: "weightedFontFamily"`
 
 Returns array of `updateTextStyle` request objects.
 
-**Why `weightedFontFamily` (not just `fontFamily`):** Same reason as Slides — the API stores font and weight together. Writing only `fontFamily` silently resets weight to normal (400), turning bold Lexend runs into regular weight. Preserving the existing weight prevents this regression.
-
-**Why `fields: "weightedFontFamily"` only:** Other text properties (color, size, italic) are not part of this update and should not be touched.
+**Why the three-level probe (not explicit-only):** Many text runs in Docs have no explicit `fontFamily` — the font is resolved from the Named Style at render time. Checking only explicit overrides would miss these runs entirely. The Named Style lookup allows the updater to detect and replace runs that are visually displaying a brand font even though they carry no inline font override.
 
 ---
 
@@ -182,7 +202,8 @@ Returns array of `updateTextStyle` request objects.
 
 - Calls `Docs.Documents.get(docId)`
 - Calls `collectDocContent(document)` to get all segments
-- Calls `buildDocFontRequests(segments, FONT_MAP)` to build requests
+- Calls `buildNamedStyleLookup(document)` to build the Named Style map
+- Calls `buildDocFontRequests(segments, FONT_MAP, nsLookup)` to build requests
 - If requests are non-empty, submits via `Docs.Documents.batchUpdate(docId, { requests })`
 
 ---
@@ -213,14 +234,17 @@ Add a `docsLogo` key to the existing `LOGO_CONFIG` object in `utils.js`:
 ```js
 docsLogo: {
   oldSourceUri: null,      // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
-  minWidthPt: 40,          // Size bounds fallback — adjust based on logDocImages output
+  newLogoUrl: null,        // Direct public image URL for insertInlineImage — set before running
+  minWidthPt: 20,          // Size bounds fallback — adjust based on logDocImages output
   maxWidthPt: 200,
-  minHeightPt: 20,
+  minHeightPt: 10,
   maxHeightPt: 100
 }
 ```
 
 `oldSourceUri` is `null` until you run `logDocImages` and identify the correct URI from the output. Once set, it becomes the primary match criterion. The size bounds serve as a fallback for logos uploaded directly (not from a URL) where `sourceUri` is null.
+
+`newLogoUrl` must be set to a direct, publicly accessible image URL (e.g. a raw GitHub URL or CDN URL). The Docs `insertInlineImage` API cannot follow Drive redirect chains, so the `driveFileUrl()` helper (which returns a redirect URL) does **not** work here. If `newLogoUrl` is unset, the implementation falls back to `https://drive.google.com/uc?id=<fileId>` which serves image bytes directly for publicly shared files.
 
 ---
 
@@ -260,9 +284,9 @@ Returns flat array of request objects (delete + insert interleaved), sorted reve
 *Depends on steps 10, 11. (Step 9 is a one-time configuration prerequisite — run it to calibrate the `LOGO_CONFIG.docsLogo` values used by step 10, but it is not called by this function.)* 
 
 - Calls `Docs.Documents.get(docId)` to get the full document JSON
-- Calls `driveFileUrl(LOGO_CONFIG.newLogoFileId)` to build the new logo URL
+- Resolves the new logo URL: prefers `LOGO_CONFIG.docsLogo.newLogoUrl` (direct URL); falls back to `"https://drive.google.com/uc?id=" + LOGO_CONFIG.newLogoFileId`
 - Calls `buildDocLogoRequests(document, newLogoUrl, dryRun)`
-- If not dry run and requests are non-empty, submits via `Docs.Documents.batchUpdate(docId, { requests })`
+- If not dry run and requests are non-empty, submits via **`batchUpdateDocWithUrlFetch`** (REST, not the Advanced Service) — required because the Advanced Service wrapper mis-serialises the `objectSize` field in `insertInlineImage` requests
 
 ---
 
@@ -299,11 +323,11 @@ Entry point for batch runs:
 
 | File | Action | Purpose |
 |---|---|---|
-| `utils.js` | **Create** | Shared: `COLOR_MAP`, `FONT_MAP`, `hexToNormalizedRgb`, `normalizedRgbMatches`, `driveFileUrl`, `LOGO_CONFIG` |
+| `utils.js` | **Create** | Shared: `COLOR_MAP`, `FONT_MAP`, `hexToNormalizedRgb`, `normalizedRgbMatches`, `driveFileUrl`, `LOGO_CONFIG` (including `docsLogo` key) |
 | `slides-updater.js` | **Modify** | Remove shared items now in `utils.js` (Phase 0, Steps 1–2) |
-| `docs-updater.js` | **Create** | All functions from Phase 2 (steps 4–13): `collectDocContent`, `buildDocColorRequests`, `replaceDocColors`, `buildDocFontRequests`, `replaceDocFonts`, `logDocImages`, `buildDocLogoRequests`, `replaceDocLogos`, `updateDocsDocument` |
+| `docs-updater.js` | **Create** | All functions from Phase 2 (steps 4–13): `buildNamedStyleLookup`, `traverseContentArray`, `batchUpdateDocWithUrlFetch`, `collectDocContent`, `buildDocColorRequests`, `buildDocTableCellColorRequests`, `buildDocParagraphShadingRequests`, `buildDocPageBackgroundRequest`, `buildDocNamedStyleColorRequests` (dead code), `replaceDocColors`, `buildDocFontRequests`, `buildDocNamedStyleFontRequests` (dead code), `replaceDocFonts`, `logDocImages`, `buildDocLogoRequests`, `replaceDocLogos`, `updateDocsDocument` |
 | `main.js` | **Modify** | Add `updateAllDocsInFolder` (Phase 3, Step 14) |
-| `appsscript.json` | **Modify** | Add Advanced Docs API under `dependencies.enabledAdvancedServices` |
+| `appsscript.json` | **Modify** | Add Advanced Docs API + `script.external_request` OAuth scope (required for `UrlFetchApp` calls in `batchUpdateDocWithUrlFetch`) |
 
 ---
 
@@ -328,11 +352,15 @@ Entry point for batch runs:
 
 ## Decisions & Scope
 
-- Named Styles are **not** updated (Option A) — Docs REST API has no `updateNamedStyles` request; only explicit inline overrides are changed
+- Named Style update functions (`buildDocNamedStyleColorRequests`, `buildDocNamedStyleFontRequests`) are **implemented but not called** — disabled by default. Text runs inheriting color/font from Named Styles are handled by the three-level probe in `buildDocColorRequests` and `buildDocFontRequests`
 - Body, headers/footers, and footnotes are all included (via `collectDocContent`)
 - `segmentId` is required on all range requests: `""` for body, header/footer/footnote ID for others
+- `replaceDocColors` uses two API paths: Advanced Service for text run foreground/highlight + paragraph shading; `batchUpdateDocWithUrlFetch` (REST) for table cells and page background
+- `replaceDocLogos` uses `batchUpdateDocWithUrlFetch` (REST) for delete+insert requests — the Advanced Service mis-serialises `objectSize` in `insertInlineImage` requests
+- Logo `newLogoUrl` must be a direct image URL (not a Drive redirect); `driveFileUrl()` does not work for `insertInlineImage`
 - Logo replacement uses `sourceUri` as primary match (likely populated in Docs); size bounds as fallback
 - Logo delete + insert pairs are sorted in **reverse index order** to prevent index shift bugs
-- `driveFileUrl` and `LOGO_CONFIG.newLogoFileId` are shared with the Slides updater via `utils.js`
+- `LOGO_CONFIG.newLogoFileId` is shared with the Slides updater via `utils.js`; `driveFileUrl()` is defined but not used by the Docs updater
+- `appsscript.json` must declare `https://www.googleapis.com/auth/script.external_request` in `oauthScopes` for `UrlFetchApp` calls to be authorized
 - Scope is batch by Drive folder; MIME type filter is `application/vnd.google-apps.document`
 - No undo/rollback mechanism — reversible by running with an inverted color/font map

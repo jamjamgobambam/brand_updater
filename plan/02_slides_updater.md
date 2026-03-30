@@ -142,7 +142,7 @@ Core traversal function. Iterates all pages — checking both page-level propert
 | Shape outline | `shapeProperties.outline.outlineFill.solidFill.color.rgbColor` | `updateShapeProperties` |
 | Text runs | `shape.text.textElements[].textRun.style.foregroundColor.rgbColor` | `updateTextStyle` (with `startIndex`, `endIndex`, `objectId`) |
 | Table cells | `table.tableRows[].tableCells[].tableCellProperties.tableCellBackgroundFill.solidFill.color.rgbColor` | `updateTableCellProperties` |
-| Line fill | `line.lineProperties.lineFill.solidFill.color.rgbColor` | `updateLine` |
+| Line fill | `line.lineProperties.lineFill.solidFill.color.rgbColor` | `updateLineProperties` |
 
 Returns array of batchUpdate request objects.
 
@@ -167,7 +167,7 @@ For text runs specifically, you need `startIndex`/`endIndex` because a single te
 
 This gets the full presentation JSON in **one API call** — important because you want one read, not one per slide. Masters and layouts can also have inline-colored elements (e.g., a logo or decorative element on the layout template), so all three page categories must be included.
 
-**batchUpdate request limit:** The Slides API allows a maximum of ~500 requests per `batchUpdate` call. A presentation with many inline-colored text runs could approach this limit. If a `RESOURCE_EXHAUSTED` error occurs on a large presentation, split the requests array into chunks of 400 and submit multiple sequential `batchUpdate` calls.
+**batchUpdate request limit:** The Slides API allows a maximum of ~500 requests per `batchUpdate` call. A presentation with many inline-colored text runs could approach this limit. The implementation always proactively splits requests into chunks of 400 and submits multiple sequential `batchUpdate` calls — this is the default behavior, not a fallback triggered by errors.
 
 ---
 
@@ -263,7 +263,7 @@ Thresholds are percentages of the slide dimensions. Keeping them in a constant m
 
 Builds `https://drive.google.com/uc?export=download&id=${fileId}`.
 
-The `replaceImage` API requires a publicly accessible URL — it cannot accept a Drive file ID directly. This helper centralizes the URL format so if Google ever changes the export URL structure, there's one place to fix it. The `export=download` parameter is more reliable than `export=view` — the `view` variant has been intermittently blocked by Google's anti-abuse systems for large or frequently-accessed files, causing `replaceImage` to fail with an opaque URL access error.
+This helper is defined in `utils.js` as a shared utility. It is **not used by the Slides logo replacement** (see Step 19 — the implementation switched to a Drive blob approach). It is retained for potential future use and is used by the Docs updater as a fallback URL format for logo insertion.
 
 ---
 
@@ -310,15 +310,23 @@ The dry-run mode is critical for position-heuristic matching because there's no 
 
 ### Step 19 — `replaceLogos(presentationId, dryRun)`
 
-*Depends on steps 15, 16, 17, 18.*
+*Depends on steps 15, 17, 18.*
 
 - Calls `Slides.Presentations.get(presentationId)` to get presentation JSON including `pageSize`, `masters`, and `layouts`
 - Extracts `pageWidth` and `pageHeight` from `presentation.pageSize`
-- Calls `driveFileUrl(LOGO_CONFIG.newLogoFileId)` to build the new logo URL
-- Calls `buildLogoReplaceRequests(mastersAndLayouts, pageWidth, pageHeight, newLogoUrl, dryRun)`
-- If not dry run and requests are non-empty, submits via `Slides.Presentations.batchUpdate()`
+- **Dry-run path:** calls `buildLogoReplaceRequests(..., null, true)` for logging only, then returns
+- **Live path:**
+  1. Calls `buildLogoReplaceRequests(..., "_placeholder_", false)` — the placeholder URL is never used; this call is only to collect the `objectId`s of matched logo elements
+  2. Builds a `Set` of logo `objectId`s from the returned request objects
+  3. Fetches the new logo as a blob: `DriveApp.getFileById(LOGO_CONFIG.newLogoFileId).getBlob()`
+  4. Opens the presentation via `SlidesApp.openById(presentationId)`
+  5. Iterates `deck.getMasters()` and `deck.getLayouts()`; for each image whose `objectId` is in the set, calls `img.replace(logoBlob, false)`
 
-Only masters and layouts are passed to `buildLogoReplaceRequests` — individual slides are deliberately excluded. Because logos are defined on master/layout pages, replacing them there propagates the change to all inheriting slides automatically, and avoids generating redundant requests for every slide.
+**Why blob instead of REST `replaceImage` + URL:** The initial plan used `Slides.Presentations.batchUpdate` with a `replaceImage` REST request and a public Drive URL. In practice this approach is unreliable — the Slides REST `replaceImage` API requires the URL to be directly accessible without redirects, and Google Drive URLs (even with `export=download`) can trigger anti-abuse redirects that cause silent failures. Using `SlidesApp.Image.replace(blobSource, crop=false)` fetches the image bytes via Drive's internal service, requires no public sharing on the logo file, and produces the same scale-to-fit (CENTER_INSIDE equivalent) behavior.
+
+**No public sharing required:** The new logo Drive file does **not** need to be publicly shared. `DriveApp.getFileById()` reads the file with the script owner's credentials.
+
+Only masters and layouts are iterated — individual slides inherit the change automatically.
 
 ---
 
@@ -382,6 +390,5 @@ The Drive API lets you list files in a folder and filter by MIME type. `applicat
 - Null/inheriting `fontFamily` runs are intentionally not matched — they pick up the new font from the master automatically
 - Font weight is preserved via `weightedFontFamily` to prevent bold text from losing its weight on replacement
 - Logo replacement uses position heuristics — always run with `dryRun: true` first to audit matches before committing
-- `replaceImage` uses `CENTER_INSIDE` to preserve the original bounding box
-- The new logo Drive file must be publicly shared for the `replaceImage` URL to be accessible
+- Logo replacement uses `SlidesApp.Image.replace(blob, false)` which scales to fit the existing bounding box (equivalent to CENTER_INSIDE) — the Drive file does **not** need to be publicly shared
 - Only masters and layouts are traversed for logos — individual slides inherit the change automatically. Any logos placed directly on individual slides (not via master/layout inheritance) will not be replaced and require manual cleanup.
