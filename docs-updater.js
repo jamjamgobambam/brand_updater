@@ -193,7 +193,7 @@ function buildDocTableCellColorRequests(doc, colorMap) {
             if (bgColor) {
               colorMap.forEach(function(mapping) {
                 if (normalizedRgbMatches(bgColor, mapping.oldHex)) {
-                  const tableStartIndex = el.startIndex;
+                  const tableStartIndex = el.startIndex !== undefined ? el.startIndex : 0;
                   requests.push({
                     updateTableCellStyle: {
                       tableRange: {
@@ -406,12 +406,11 @@ function replaceDocColors(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
 
-  const nsLookup      = buildNamedStyleLookup(doc);
-  const inlineReqs    = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
-  const nsReqs        = buildDocNamedStyleColorRequests(doc, COLOR_MAP);
-  const cellReqs      = buildDocTableCellColorRequests(doc, COLOR_MAP);
+  const nsLookup  = buildNamedStyleLookup(doc);
+  const inlineReqs = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
+  const cellReqs   = buildDocTableCellColorRequests(doc, COLOR_MAP);
 
-  if (inlineReqs.length === 0 && nsReqs.length === 0 && cellReqs.length === 0) {
+  if (inlineReqs.length === 0 && cellReqs.length === 0) {
     Logger.log("  replaceDocColors: no color changes for %s", docId);
     return;
   }
@@ -421,13 +420,17 @@ function replaceDocColors(docId) {
     Logger.log("  replaceDocColors: %d inline requests submitted for %s", inlineReqs.length, docId);
   }
 
-  // Named-style and table-cell requests must go via REST (Advanced Service
-  // wrapper does not support updateNamedStyle or updateTableCellStyle).
-  const restReqs = nsReqs.concat(cellReqs);
-  if (restReqs.length > 0) {
-    batchUpdateDocWithUrlFetch(docId, restReqs);
-    Logger.log("  replaceDocColors: %d REST requests submitted for %s (named-style: %d, cell-bg: %d)",
-      restReqs.length, docId, nsReqs.length, cellReqs.length);
+  // Table-cell background requests must go via REST (Advanced Service
+  // wrapper does not support updateTableCellStyle).
+  if (cellReqs.length > 0) {
+    try {
+      batchUpdateDocWithUrlFetch(docId, cellReqs);
+      Logger.log("  replaceDocColors: %d cell-bg requests submitted for %s", cellReqs.length, docId);
+    } catch (e) {
+      // Log the first request to help diagnose the structure issue
+      Logger.log("  cell-bg request FAILED (%s). First request: %s", e.message, JSON.stringify(cellReqs[0]));
+      throw e;
+    }
   }
 }
 
@@ -712,7 +715,7 @@ function buildDocLogoRequests(doc, newLogoUrl, dryRun) {
           if (pe.inlineObjectElement) {
             reverseIndex.push({
               objectId:   pe.inlineObjectElement.inlineObjectId,
-              startIndex: pe.startIndex,
+              startIndex: pe.startIndex !== undefined ? pe.startIndex : 0,
               segmentId:  segmentId,
             });
           }
@@ -829,9 +832,15 @@ function buildDocLogoRequests(doc, newLogoUrl, dryRun) {
  * @param {boolean} [dryRun=false]  If true, logs matches but makes no changes.
  */
 function replaceDocLogos(docId, dryRun) {
-  const doc        = Docs.Documents.get(docId);
-  const newLogoUrl = driveFileUrl(LOGO_CONFIG.newLogoFileId);
-  const requests   = buildDocLogoRequests(doc, newLogoUrl, dryRun);
+  const doc = Docs.Documents.get(docId);
+
+  // Prefer an explicit direct URL from config; fall back to the Drive uc?id=
+  // format which serves image bytes for publicly shared files without export.
+  const newLogoUrl = LOGO_CONFIG.docsLogo.newLogoUrl ||
+    ("https://drive.google.com/uc?id=" + LOGO_CONFIG.newLogoFileId);
+
+  Logger.log("  replaceDocLogos: using image URL: %s", newLogoUrl);
+  const requests = buildDocLogoRequests(doc, newLogoUrl, dryRun);
 
   if (dryRun) {
     Logger.log("  replaceDocLogos: dry run complete for %s", docId);
@@ -843,7 +852,8 @@ function replaceDocLogos(docId, dryRun) {
     return;
   }
 
-  Docs.Documents.batchUpdate({ requests: requests }, docId);
+  // Send via REST to avoid Advanced Service mis-serialising objectSize.
+  batchUpdateDocWithUrlFetch(docId, requests);
   Logger.log("  replaceDocLogos: %d requests submitted for %s", requests.length, docId);
 }
 
@@ -865,9 +875,28 @@ function replaceDocLogos(docId, dryRun) {
  */
 function updateDocsDocument(docId, dryRun) {
   Logger.log("Starting brand update for document: %s", docId);
-  replaceDocColors(docId);
-  replaceDocFonts(docId);
-  replaceDocLogos(docId, dryRun);
+
+  try {
+    replaceDocColors(docId);
+  } catch (e) {
+    Logger.log("  ERROR in replaceDocColors: %s", e.message);
+    throw new Error("replaceDocColors failed: " + e.message);
+  }
+
+  try {
+    replaceDocFonts(docId);
+  } catch (e) {
+    Logger.log("  ERROR in replaceDocFonts: %s", e.message);
+    throw new Error("replaceDocFonts failed: " + e.message);
+  }
+
+  try {
+    replaceDocLogos(docId, dryRun);
+  } catch (e) {
+    Logger.log("  ERROR in replaceDocLogos: %s", e.message);
+    throw new Error("replaceDocLogos failed: " + e.message);
+  }
+
   Logger.log("Done: %s", docId);
 }
 

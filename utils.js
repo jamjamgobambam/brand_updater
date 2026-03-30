@@ -40,6 +40,14 @@ const LOGO_CONFIG = {
   titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
   docsLogo: {
     oldSourceUri: null, // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
+    // newLogoUrl: direct public image URL for insertInlineImage.
+    // The Docs API cannot follow Drive redirects, so drive.google.com URLs fail.
+    // Set this to a direct public URL: a GitHub raw URL, Google Cloud Storage,
+    // or any CDN that serves the image bytes without redirects.
+    // Example: "https://raw.githubusercontent.com/org/repo/main/logo.png"
+    // Leave null to fall back to the Drive uc?id= URL (works only if the file
+    // is shared "Anyone with the link can view" and Drive serves it redirect-free).
+    newLogoUrl:   null,
     minWidthPt:   20,   // Size bounds fallback — adjust based on logDocImages output
     maxWidthPt:   200,
     minHeightPt:  10,
