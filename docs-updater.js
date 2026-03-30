@@ -162,35 +162,60 @@ function batchUpdateDocWithUrlFetch(docId, requests) {
 // ---------------------------------------------------------------------------
 
 /**
- * Builds updateTextStyle requests for every textRun that has an explicit
- * inline foregroundColor override matching an entry in colorMap.
+ * Builds updateTextStyle requests for every textRun whose effective
+ * foreground color matches an entry in colorMap.
  *
- * Runs whose color is inherited from a Named Style are intentionally skipped
- * here — those are handled at the Named Style level by
- * buildDocNamedStyleColorRequests, which updates the style definition itself
- * rather than over-stamping individual runs.
+ * Three-level probe per run:
+ *   1. Explicit inline foregroundColor override on the run.
+ *   2. foregroundColor in the Named Style for the paragraph's namedStyleType.
+ *      (If the Named Style color is not in colorMap, fall through to level 3.)
+ *   3. NORMAL_TEXT Named Style color as a proxy for theme-inherited values.
+ *      This catches TITLE and HEADING paragraphs that carry no inline or
+ *      Named-Style color but display the document's default brand color.
  *
  * @param {{ content: Object[], segmentId: string }[]} segments
- * @param {Object[]} colorMap  Array of { oldHex, newHex } entries (COLOR_MAP).
- * @returns {Object[]}         Array of updateTextStyle request objects.
+ * @param {Object[]} colorMap        Array of { oldHex, newHex } entries.
+ * @param {Object}   namedStyleLookup  Map of namedStyleType → textStyle.
+ * @returns {Object[]}  Array of updateTextStyle request objects.
  */
-function buildDocColorRequests(segments, colorMap) {
+function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
   const requests = [];
+  const normalStyle = (namedStyleLookup && namedStyleLookup["NORMAL_TEXT"]) || {};
+  const normalRgb   =
+    normalStyle.foregroundColor &&
+    normalStyle.foregroundColor.color &&
+    normalStyle.foregroundColor.color.rgbColor;
 
   segments.forEach(function(segment) {
     traverseContentArray(segment.content, function(run) {
-      // Only process runs with an explicit inline foregroundColor override.
-      // Runs inheriting their color from a Named Style are handled at the
-      // Named Style level by buildDocNamedStyleColorRequests (via UrlFetchApp).
-      const fgColor =
+      // Level 1: explicit inline color.
+      const explicitRgb =
         run.style.foregroundColor &&
         run.style.foregroundColor.color &&
         run.style.foregroundColor.color.rgbColor;
 
-      if (!fgColor) return;
+      var effectiveRgb = explicitRgb;
+
+      if (!effectiveRgb && namedStyleLookup) {
+        // Level 2: Named Style for this paragraph type.
+        const nsStyle = namedStyleLookup[run.namedStyleType] || {};
+        const nsRgb   =
+          nsStyle.foregroundColor &&
+          nsStyle.foregroundColor.color &&
+          nsStyle.foregroundColor.color.rgbColor;
+        if (nsRgb && colorMap.some(function(m) { return normalizedRgbMatches(nsRgb, m.oldHex); })) {
+          effectiveRgb = nsRgb;
+        } else {
+          // Level 3: NORMAL_TEXT proxy (catches theme-inherited heading colors
+          // and TITLE whose Named Style has a non-brand explicit color).
+          effectiveRgb = normalRgb;
+        }
+      }
+
+      if (!effectiveRgb) return;
 
       colorMap.forEach(function(mapping) {
-        if (normalizedRgbMatches(fgColor, mapping.oldHex)) {
+        if (normalizedRgbMatches(effectiveRgb, mapping.oldHex)) {
           requests.push({
             updateTextStyle: {
               range: {
@@ -302,26 +327,14 @@ function replaceDocColors(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
 
-  // Step A — update Named Style definitions (TITLE, HEADING_1–6, NORMAL_TEXT,
-  // SUBTITLE) via direct REST call. This changes the styles dropdown and fixes
-  // all text that inherits its color from a Named Style.
-  const nsRequests = buildDocNamedStyleColorRequests(doc, COLOR_MAP);
-  if (nsRequests.length > 0) {
-    batchUpdateDocWithUrlFetch(docId, nsRequests);
-    Logger.log("  replaceDocColors: %d named-style requests for %s", nsRequests.length, docId);
-  }
-
-  // Step B — stamp explicit overrides on runs that already had an explicit
-  // inline foregroundColor (those won’t be covered by the Named Style update).
-  const runRequests = buildDocColorRequests(segments, COLOR_MAP);
-  if (runRequests.length > 0) {
-    Docs.Documents.batchUpdate({ requests: runRequests }, docId);
-    Logger.log("  replaceDocColors: %d run requests for %s", runRequests.length, docId);
-  }
-
-  if (nsRequests.length === 0 && runRequests.length === 0) {
+  const nsLookup = buildNamedStyleLookup(doc);
+  const requests = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
+  if (requests.length === 0) {
     Logger.log("  replaceDocColors: no color changes for %s", docId);
+    return;
   }
+  Docs.Documents.batchUpdate({ requests: requests }, docId);
+  Logger.log("  replaceDocColors: %d requests submitted for %s", requests.length, docId);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,35 +344,60 @@ function replaceDocColors(docId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Builds updateTextStyle requests for every textRun that has an explicit
- * inline weightedFontFamily or fontFamily override matching an entry in fontMap.
- * Preserves font weight so bold runs stay bold after replacement.
+ * Builds updateTextStyle requests for every textRun whose effective font
+ * matches an entry in fontMap. Preserves weight so bold runs stay bold.
  *
- * Runs whose font is inherited from a Named Style are intentionally skipped
- * here — those are handled at the Named Style level by
- * buildDocNamedStyleFontRequests, which updates the style definition itself
- * rather than over-stamping individual runs.
+ * Three-level probe per run:
+ *   1. Explicit inline weightedFontFamily / fontFamily override on the run.
+ *   2. weightedFontFamily in the Named Style for the paragraph's namedStyleType.
+ *      (If the Named Style font is not in fontMap, fall through to level 3.)
+ *   3. NORMAL_TEXT Named Style font as a proxy for theme-inherited values.
+ *      This catches TITLE and HEADING paragraphs that carry no inline or
+ *      Named-Style font but display the document's default brand font.
  *
  * @param {{ content: Object[], segmentId: string }[]} segments
- * @param {Object[]} fontMap  Array of { oldFont, newFont } entries (FONT_MAP).
- * @returns {Object[]}        Array of updateTextStyle request objects.
+ * @param {Object[]} fontMap         Array of { oldFont, newFont } entries.
+ * @param {Object}   namedStyleLookup  Map of namedStyleType → textStyle.
+ * @returns {Object[]}  Array of updateTextStyle request objects.
  */
-function buildDocFontRequests(segments, fontMap) {
+function buildDocFontRequests(segments, fontMap, namedStyleLookup) {
   const requests = [];
+  const normalStyle  = (namedStyleLookup && namedStyleLookup["NORMAL_TEXT"]) || {};
+  const normalWff    = normalStyle.weightedFontFamily;
+  const normalFamily = normalWff ? normalWff.fontFamily : normalStyle.fontFamily;
+  const normalWeight = normalWff ? normalWff.weight : 400;
 
   segments.forEach(function(segment) {
     traverseContentArray(segment.content, function(run) {
-      // Only process runs with an explicit inline weightedFontFamily override.
-      // Runs inheriting their font from a Named Style are handled at the
-      // Named Style level by buildDocNamedStyleFontRequests (via UrlFetchApp).
-      const style      = run.style;
-      const wff        = style.weightedFontFamily;
-      const fontFamily = wff ? wff.fontFamily : style.fontFamily;
-      if (!fontFamily) return;
+      // Level 1: explicit inline font.
+      const style          = run.style;
+      const wff            = style.weightedFontFamily;
+      const explicitFamily = wff ? wff.fontFamily : style.fontFamily;
+      const explicitWeight = wff ? wff.weight : null;
+
+      var effectiveFamily = explicitFamily;
+      var effectiveWeight = explicitWeight;
+
+      if (!effectiveFamily && namedStyleLookup) {
+        // Level 2: Named Style for this paragraph type.
+        const nsStyle  = namedStyleLookup[run.namedStyleType] || {};
+        const nsWff    = nsStyle.weightedFontFamily;
+        const nsFamily = nsWff ? nsWff.fontFamily : nsStyle.fontFamily;
+        if (nsFamily && fontMap.some(function(m) { return nsFamily === m.oldFont; })) {
+          effectiveFamily = nsFamily;
+          effectiveWeight = nsWff ? nsWff.weight : 400;
+        } else {
+          // Level 3: NORMAL_TEXT proxy (catches theme-inherited heading fonts
+          // and TITLE whose Named Style has a non-brand explicit font).
+          effectiveFamily = normalFamily;
+          effectiveWeight = normalWeight;
+        }
+      }
+
+      if (!effectiveFamily) return;
 
       fontMap.forEach(function(mapping) {
-        if (fontFamily === mapping.oldFont) {
-          const existingWeight = wff ? wff.weight : 400;
+        if (effectiveFamily === mapping.oldFont) {
           requests.push({
             updateTextStyle: {
               range: {
@@ -370,7 +408,7 @@ function buildDocFontRequests(segments, fontMap) {
               textStyle: {
                 weightedFontFamily: {
                   fontFamily: mapping.newFont,
-                  weight:     existingWeight,
+                  weight:     effectiveWeight || 400,
                 },
               },
               fields: "weightedFontFamily",
@@ -468,26 +506,14 @@ function replaceDocFonts(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
 
-  // Step A — update Named Style definitions (TITLE, HEADING_1–6, NORMAL_TEXT,
-  // SUBTITLE) via direct REST call. This changes the styles dropdown and fixes
-  // all text that inherits its font from a Named Style.
-  const nsRequests = buildDocNamedStyleFontRequests(doc, FONT_MAP);
-  if (nsRequests.length > 0) {
-    batchUpdateDocWithUrlFetch(docId, nsRequests);
-    Logger.log("  replaceDocFonts: %d named-style requests for %s", nsRequests.length, docId);
-  }
-
-  // Step B — stamp explicit overrides on runs that already had an explicit
-  // inline font override (those won’t be covered by the Named Style update).
-  const runRequests = buildDocFontRequests(segments, FONT_MAP);
-  if (runRequests.length > 0) {
-    Docs.Documents.batchUpdate({ requests: runRequests }, docId);
-    Logger.log("  replaceDocFonts: %d run requests for %s", runRequests.length, docId);
-  }
-
-  if (nsRequests.length === 0 && runRequests.length === 0) {
+  const nsLookup = buildNamedStyleLookup(doc);
+  const requests = buildDocFontRequests(segments, FONT_MAP, nsLookup);
+  if (requests.length === 0) {
     Logger.log("  replaceDocFonts: no font changes for %s", docId);
+    return;
   }
+  Docs.Documents.batchUpdate({ requests: requests }, docId);
+  Logger.log("  replaceDocFonts: %d requests submitted for %s", requests.length, docId);
 }
 
 // ---------------------------------------------------------------------------
