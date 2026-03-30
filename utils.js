@@ -3,20 +3,71 @@
 // =============================================================================
 
 /**
- * Color mapping: old hex → new hex for each Accent slot.
- * HYPERLINK and FOLLOWED_HYPERLINK both map to the same new hex as Accent 2.
+ * Color mapping: old hex → new hex for INLINE (direct) RGB color replacement.
+ *
+ * Each family lists all known stored variants of an old brand color so that
+ * slides and docs using either the official style-guide value OR the slightly
+ * different value Google rounds/stores in its back-end will both be matched.
+ *
+ * Sources:
+ *   Style guide text values  — extracted from styles1.pdf (v1 brand)
+ *   Drawn/rendered variants  — extracted from PDF vector drawings
+ *   Style guide text values  — extracted from styles2.pdf (v2 brand)
+ *   Google Slides variants   — values Google stores in the theme color slot
  */
 const COLOR_MAP = [
-  { oldHex: "#009eb0", newHex: "#003547" }, // Accent 1
-  { oldHex: "#9660bf", newHex: "#005E54" }, // Accent 2
-  { oldHex: "#ed6060", newHex: "#C2BB00" }, // Accent 3
-  { oldHex: "#3ea33e", newHex: "#E1523D" }, // Accent 4
-  { oldHex: "#007acc", newHex: "#ED8B16" }, // Accent 5
-  { oldHex: "#ead300", newHex: "#ead300" }, // Accent 6 (unchanged)
+  // ── Accent 1 — Teal ──────────────────────────────────────────────────────
+  { oldHex: "#00ADBC", newHex: "#003547" }, // v1 style guide primary teal
+  { oldHex: "#00acbc", newHex: "#003547" }, // v1 drawn variant
+  { oldHex: "#009eb0", newHex: "#003547" }, // Google Slides theme-slot variant
+  { oldHex: "#009eaf", newHex: "#003547" }, // 1-unit variant
+  { oldHex: "#0093A4", newHex: "#003547" }, // v2 style guide teal
+  { oldHex: "#0093a3", newHex: "#003547" }, // v2 drawn variant
+
+  // ── Accent 2 — Purple ────────────────────────────────────────────────────
+  { oldHex: "#7665A0", newHex: "#005E54" }, // v1 style guide purple
+  { oldHex: "#7564a0", newHex: "#005E54" }, // v1 drawn variant
+  { oldHex: "#9660bf", newHex: "#005E54" }, // Google Slides theme-slot variant
+  { oldHex: "#9560bf", newHex: "#005E54" }, // 1-unit variant
+  { oldHex: "#8C52BA", newHex: "#005E54" }, // v2 style guide purple
+  { oldHex: "#8c52ba", newHex: "#005E54" }, // v2 drawn variant
+
+  // ── Accent 3 ─────────────────────────────────────────────────────────────
+  { oldHex: "#ed6060", newHex: "#C2BB00" }, // v1 + v2 style guide strawberry
+  { oldHex: "#ED6060", newHex: "#C2BB00" }, // uppercase variant
+
+  // ── Accent 4 ─────────────────────────────────────────────────────────────
+  { oldHex: "#3ea33e", newHex: "#E1523D" },
+  { oldHex: "#3ea23e", newHex: "#E1523D" }, // 1-unit drawn variant
+
+  // ── Accent 5 — Blue ──────────────────────────────────────────────────────
+  { oldHex: "#007acc", newHex: "#ED8B16" }, // Google Slides theme-slot variant
+  { oldHex: "#0094CA", newHex: "#ED8B16" }, // v1 style guide blue accent
+  { oldHex: "#0093ca", newHex: "#ED8B16" }, // v1 drawn variant
+
+  // ── Accent 6 — Yellow (target is same — normalises near-variants) ─────────
+  { oldHex: "#ead300", newHex: "#ead300" },
+  { oldHex: "#FFC52D", newHex: "#ead300" }, // v1 style guide bright yellow
+  { oldHex: "#ffc42d", newHex: "#ead300" }, // 1-unit drawn variant
 ];
 
 // Target hex for theme HYPERLINK and FOLLOWED_HYPERLINK slots (same as Accent 2)
 const HYPERLINK_NEW_HEX = "#005E54";
+
+/**
+ * New hex values for the 6 Accent slots in the master theme ColorScheme,
+ * in ACCENT1→ACCENT6 order. Used exclusively by updateMasterThemeColors().
+ * Kept separate from COLOR_MAP so adding variant entries to COLOR_MAP never
+ * breaks the positional slot assignment.
+ */
+const ACCENT_NEW_HEXES = [
+  "#003547", // ACCENT1 — new teal
+  "#005E54", // ACCENT2 — new green
+  "#C2BB00", // ACCENT3 — new yellow-green
+  "#E1523D", // ACCENT4 — new coral
+  "#ED8B16", // ACCENT5 — new orange
+  "#ead300", // ACCENT6 — yellow (unchanged)
+];
 
 /**
  * Font mapping: old font family → new font family.
@@ -39,11 +90,11 @@ const FALLBACK_FONT = "Lexend";
 
 /**
  * Euclidean RGB distance threshold (0–255 scale) for near-color matching.
- * Colors within this distance of an old or new brand color will be replaced.
- * 40 ≈ 16% per channel — covers shade variations that are visually the same
- * brand color but stored with slightly different values.
+ * Kept tight (15) now that COLOR_MAP has explicit entries for all known
+ * old-brand variants. This only covers minor floating-point rounding noise,
+ * not fuzzy "similar color" matching.
  */
-const COLOR_DISTANCE_THRESHOLD = 40;
+const COLOR_DISTANCE_THRESHOLD = 15;
 
 /**
  * Logo detection config.

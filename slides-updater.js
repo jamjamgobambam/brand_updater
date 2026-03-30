@@ -19,9 +19,10 @@
 function updateMasterThemeColors(presentationId, masters) {
   const requests = [];
 
-  // Map Accent slot type → new hex using COLOR_MAP (positional: ACCENT1 first)
+  // New hex per Accent slot, sourced from the dedicated ACCENT_NEW_HEXES constant
+  // rather than COLOR_MAP, which now has multiple entries per color family.
   const accentTypes = ["ACCENT1", "ACCENT2", "ACCENT3", "ACCENT4", "ACCENT5", "ACCENT6"];
-  const accentNewHexes = COLOR_MAP.map(function(entry) { return entry.newHex; });
+  const accentNewHexes = ACCENT_NEW_HEXES;
 
   masters.forEach(function(master) {
     const existingColors =
