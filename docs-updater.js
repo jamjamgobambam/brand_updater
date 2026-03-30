@@ -1,7 +1,7 @@
 // =============================================================================
 // docs-updater.js — Google Docs brand updater (colors, fonts, logos)
 // Depends on globals defined in utils.js: COLOR_MAP, FONT_MAP, LOGO_CONFIG,
-// normalizedRgbMatches, hexToNormalizedRgb, driveFileUrl
+// normalizedRgbMatches, hexToNormalizedRgb
 // Requires the Docs Advanced Service (userSymbol: "Docs") enabled in the
 // Apps Script project and appsscript.json.
 // =============================================================================
@@ -122,6 +122,30 @@ function traverseContentArray(contentArray, callback) {
   });
 }
 
+/**
+ * Walks all structural elements in contentArray, calling onElement(el, segmentId)
+ * for each, then recursively descending into any table's cell content.
+ * Used as a shared traversal backbone for per-element logic that is not specific
+ * to textRuns (e.g. paragraph shading, table cell styles, inline images).
+ *
+ * @param {Object[]} contentArray  Array of structural elements (may be null/undefined).
+ * @param {string}   segmentId     Docs API segment ID ("" for body, opaque for others).
+ * @param {Function} onElement     Callback invoked as onElement(el, segmentId) for each element.
+ */
+function walkDocContent(contentArray, segmentId, onElement) {
+  if (!contentArray) return;
+  contentArray.forEach(function(el) {
+    onElement(el, segmentId);
+    if (el.table) {
+      (el.table.tableRows || []).forEach(function(row) {
+        (row.tableCells || []).forEach(function(cell) {
+          walkDocContent(cell.content, segmentId, onElement);
+        });
+      });
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // batchUpdateDocWithUrlFetch
 // ---------------------------------------------------------------------------
@@ -190,85 +214,78 @@ function buildDocTableCellColorRequests(doc, colorMap) {
     ) || null;
   }
 
-  function walkTableCells(contentArray, segmentId) {
-    if (!contentArray) return;
-    contentArray.forEach(function(el) {
-      if (el.table) {
-        (el.table.tableRows || []).forEach(function(row, rowIndex) {
-          (row.tableCells || []).forEach(function(cell, colIndex) {
-            const tableStartIndex = el.startIndex !== undefined ? el.startIndex : 0;
-            const tableRange = {
-              tableCellLocation: {
-                tableStartLocation: { index: tableStartIndex, segmentId: segmentId },
-                rowIndex:           rowIndex,
-                columnIndex:        colIndex,
-              },
-              rowSpan:    1,
-              columnSpan: 1,
-            };
+  function processTableCells(el, segmentId) {
+    if (!el.table) return;
+    (el.table.tableRows || []).forEach(function(row, rowIndex) {
+      (row.tableCells || []).forEach(function(cell, colIndex) {
+        const tableStartIndex = el.startIndex !== undefined ? el.startIndex : 0;
+        const tableRange = {
+          tableCellLocation: {
+            tableStartLocation: { index: tableStartIndex, segmentId: segmentId },
+            rowIndex:           rowIndex,
+            columnIndex:        colIndex,
+          },
+          rowSpan:    1,
+          columnSpan: 1,
+        };
 
-            // --- Background color ---
-            const bgColor =
-              cell.tableCellStyle &&
-              cell.tableCellStyle.backgroundColor &&
-              cell.tableCellStyle.backgroundColor.color &&
-              cell.tableCellStyle.backgroundColor.color.rgbColor;
+        // --- Background color ---
+        const bgColor =
+          cell.tableCellStyle &&
+          cell.tableCellStyle.backgroundColor &&
+          cell.tableCellStyle.backgroundColor.color &&
+          cell.tableCellStyle.backgroundColor.color.rgbColor;
 
-            if (bgColor) {
-              colorMap.forEach(function(mapping) {
-                if (normalizedRgbMatches(bgColor, mapping.oldHex)) {
-                  requests.push({
-                    updateTableCellStyle: {
-                      tableRange:     tableRange,
-                      tableCellStyle: {
-                        backgroundColor: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } },
-                      },
-                      fields: "backgroundColor",
-                    },
-                  });
-                }
+        if (bgColor) {
+          colorMap.forEach(function(mapping) {
+            if (normalizedRgbMatches(bgColor, mapping.oldHex)) {
+              requests.push({
+                updateTableCellStyle: {
+                  tableRange:     tableRange,
+                  tableCellStyle: {
+                    backgroundColor: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } },
+                  },
+                  fields: "backgroundColor",
+                },
               });
             }
+          });
+        }
 
-            // --- Border colors (one request per side that has a matching color) ---
-            BORDER_SIDES.forEach(function(side) {
-              const borderRgb = getBorderRgb(cell, side);
-              if (!borderRgb) return;
+        // --- Border colors (one request per side that has a matching color) ---
+        BORDER_SIDES.forEach(function(side) {
+          const borderRgb = getBorderRgb(cell, side);
+          if (!borderRgb) return;
 
-              colorMap.forEach(function(mapping) {
-                if (normalizedRgbMatches(borderRgb, mapping.oldHex)) {
-                  const newBorder = Object.assign(
-                    {},
-                    cell.tableCellStyle[side],
-                    { color: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } } }
-                  );
-                  const stylePatch = {};
-                  stylePatch[side] = newBorder;
-                  requests.push({
-                    updateTableCellStyle: {
-                      tableRange:     tableRange,
-                      tableCellStyle: stylePatch,
-                      fields:         side + ".color",
-                    },
-                  });
-                }
+          colorMap.forEach(function(mapping) {
+            if (normalizedRgbMatches(borderRgb, mapping.oldHex)) {
+              const newBorder = Object.assign(
+                {},
+                cell.tableCellStyle[side],
+                { color: { color: { rgbColor: hexToNormalizedRgb(mapping.newHex) } } }
+              );
+              const stylePatch = {};
+              stylePatch[side] = newBorder;
+              requests.push({
+                updateTableCellStyle: {
+                  tableRange:     tableRange,
+                  tableCellStyle: stylePatch,
+                  fields:         side + ".color",
+                },
               });
-            });
-
-            // Recurse into nested tables
-            walkTableCells(cell.content, segmentId);
+            }
           });
         });
-      }
+      });
     });
   }
 
-  if (doc.body) walkTableCells(doc.body.content, "");
+  walkDocContent(doc.body ? doc.body.content : null, "", processTableCells);
   Object.keys(doc.headers || {}).forEach(function(id) {
-    walkTableCells(doc.headers[id].content, id);
+    walkDocContent(doc.headers[id].content, id, processTableCells);
   });
   Object.keys(doc.footers || {}).forEach(function(id) {
-    walkTableCells(doc.footers[id].content, id);
+    walkDocContent(doc.footers[id].content, id, processTableCells);
   });
 
   return requests;
@@ -472,54 +489,40 @@ function buildDocNamedStyleColorRequests(doc, colorMap) {
 function buildDocParagraphShadingRequests(segments, colorMap) {
   var requests = [];
 
-  function walkContent(contentArray, segmentId) {
-    if (!contentArray) return;
-    contentArray.forEach(function(se) {
-      if (se.paragraph) {
-        var shading =
-          se.paragraph.paragraphStyle &&
-          se.paragraph.paragraphStyle.shading &&
-          se.paragraph.paragraphStyle.shading.backgroundColor &&
-          se.paragraph.paragraphStyle.shading.backgroundColor.color &&
-          se.paragraph.paragraphStyle.shading.backgroundColor.color.rgbColor;
-        if (shading) {
-          colorMap.forEach(function(mapping) {
-            if (normalizedRgbMatches(shading, mapping.oldHex)) {
-              var startIndex = se.startIndex !== undefined ? se.startIndex : 0;
-              requests.push({
-                updateParagraphStyle: {
-                  range: {
-                    startIndex: startIndex,
-                    endIndex:   se.endIndex,
-                    segmentId:  segmentId,
-                  },
-                  paragraphStyle: {
-                    shading: {
-                      backgroundColor: {
-                        color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
-                      },
+  segments.forEach(function(segment) {
+    walkDocContent(segment.content, segment.segmentId, function(el, segmentId) {
+      if (!el.paragraph) return;
+      var shading =
+        el.paragraph.paragraphStyle &&
+        el.paragraph.paragraphStyle.shading &&
+        el.paragraph.paragraphStyle.shading.backgroundColor &&
+        el.paragraph.paragraphStyle.shading.backgroundColor.color &&
+        el.paragraph.paragraphStyle.shading.backgroundColor.color.rgbColor;
+      if (shading) {
+        colorMap.forEach(function(mapping) {
+          if (normalizedRgbMatches(shading, mapping.oldHex)) {
+            var startIndex = el.startIndex !== undefined ? el.startIndex : 0;
+            requests.push({
+              updateParagraphStyle: {
+                range: {
+                  startIndex: startIndex,
+                  endIndex:   el.endIndex,
+                  segmentId:  segmentId,
+                },
+                paragraphStyle: {
+                  shading: {
+                    backgroundColor: {
+                      color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
                     },
                   },
-                  fields: "shading.backgroundColor",
                 },
-              });
-            }
-          });
-        }
-      }
-
-      if (se.table) {
-        (se.table.tableRows || []).forEach(function(row) {
-          (row.tableCells || []).forEach(function(cell) {
-            walkContent(cell.content, segmentId);
-          });
+                fields: "shading.backgroundColor",
+              },
+            });
+          }
         });
       }
     });
-  }
-
-  segments.forEach(function(segment) {
-    walkContent(segment.content, segment.segmentId);
   });
 
   return requests;
@@ -805,32 +808,21 @@ function logDocImages(docId) {
   // Build a map of objectId → segment label for reporting
   const objectSegment = {};
 
-  function scanForImageElements(contentArray, segmentLabel) {
-    if (!contentArray) return;
-    contentArray.forEach(function(el) {
-      if (el.paragraph) {
-        (el.paragraph.elements || []).forEach(function(pe) {
-          if (pe.inlineObjectElement) {
-            objectSegment[pe.inlineObjectElement.inlineObjectId] = segmentLabel;
-          }
-        });
-      }
-      if (el.table) {
-        (el.table.tableRows || []).forEach(function(row) {
-          (row.tableCells || []).forEach(function(cell) {
-            scanForImageElements(cell.content, segmentLabel);
-          });
-        });
+  function recordImageElements(el, segmentLabel) {
+    if (!el.paragraph) return;
+    (el.paragraph.elements || []).forEach(function(pe) {
+      if (pe.inlineObjectElement) {
+        objectSegment[pe.inlineObjectElement.inlineObjectId] = segmentLabel;
       }
     });
   }
 
-  if (doc.body) scanForImageElements(doc.body.content, "body");
+  walkDocContent(doc.body ? doc.body.content : null, "body", recordImageElements);
   Object.keys(doc.headers || {}).forEach(function(id) {
-    scanForImageElements(doc.headers[id].content, "header:" + id);
+    walkDocContent(doc.headers[id].content, "header:" + id, recordImageElements);
   });
   Object.keys(doc.footers || {}).forEach(function(id) {
-    scanForImageElements(doc.footers[id].content, "footer:" + id);
+    walkDocContent(doc.footers[id].content, "footer:" + id, recordImageElements);
   });
 
   Object.keys(inlineObjects).forEach(function(objectId) {
@@ -877,36 +869,25 @@ function buildDocLogoRequests(doc, newLogoUrl, dryRun) {
   // Step 1 — build reverse index: position of every inlineObjectElement
   const reverseIndex = [];
 
-  function indexContentForImages(contentArray, segmentId) {
-    if (!contentArray) return;
-    contentArray.forEach(function(el) {
-      if (el.paragraph) {
-        (el.paragraph.elements || []).forEach(function(pe) {
-          if (pe.inlineObjectElement) {
-            reverseIndex.push({
-              objectId:   pe.inlineObjectElement.inlineObjectId,
-              startIndex: pe.startIndex !== undefined ? pe.startIndex : 0,
-              segmentId:  segmentId,
-            });
-          }
-        });
-      }
-      if (el.table) {
-        (el.table.tableRows || []).forEach(function(row) {
-          (row.tableCells || []).forEach(function(cell) {
-            indexContentForImages(cell.content, segmentId);
-          });
+  function collectImageElement(el, segmentId) {
+    if (!el.paragraph) return;
+    (el.paragraph.elements || []).forEach(function(pe) {
+      if (pe.inlineObjectElement) {
+        reverseIndex.push({
+          objectId:   pe.inlineObjectElement.inlineObjectId,
+          startIndex: pe.startIndex !== undefined ? pe.startIndex : 0,
+          segmentId:  segmentId,
         });
       }
     });
   }
 
-  if (doc.body) indexContentForImages(doc.body.content, "");
+  walkDocContent(doc.body ? doc.body.content : null, "", collectImageElement);
   Object.keys(doc.headers || {}).forEach(function(id) {
-    indexContentForImages(doc.headers[id].content, id);
+    walkDocContent(doc.headers[id].content, id, collectImageElement);
   });
   Object.keys(doc.footers || {}).forEach(function(id) {
-    indexContentForImages(doc.footers[id].content, id);
+    walkDocContent(doc.footers[id].content, id, collectImageElement);
   });
 
   // Steps 2–4 — match inline objects and collect logo positions

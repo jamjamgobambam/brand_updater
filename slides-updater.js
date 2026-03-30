@@ -1,7 +1,7 @@
 // =============================================================================
 // slides-updater.js — Google Slides brand updater (colors, fonts, logos)
 // Depends on globals defined in utils.js: COLOR_MAP, FONT_MAP, LOGO_CONFIG,
-// hexToNormalizedRgb, normalizedRgbMatches, driveFileUrl, HYPERLINK_NEW_HEX
+// hexToNormalizedRgb, normalizedRgbMatches, HYPERLINK_NEW_HEX
 // =============================================================================
 
 // ---------------------------------------------------------------------------
@@ -305,14 +305,14 @@ function buildInlineColorRequests(pages, colorMap) {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetches the full presentation JSON and replaces all inline RGB colors
- * matching COLOR_MAP across masters, layouts, and slides.
- * Splits requests into batches of 400 to stay under the 500-request API limit.
+ * Replaces all inline RGB colors matching COLOR_MAP across masters, layouts,
+ * and slides. Splits requests into batches to stay under the 500-request API limit.
  *
  * @param {string} presentationId
+ * @param {Object} [cachedPresentation]  Pre-fetched presentation object; fetched if omitted.
  */
-function replaceInlineColors(presentationId) {
-  const presentation = Slides.Presentations.get(presentationId);
+function replaceInlineColors(presentationId, cachedPresentation) {
+  const presentation = cachedPresentation || getPresentation(presentationId);
   const allPages = [].concat(
     presentation.masters  || [],
     presentation.layouts  || [],
@@ -322,8 +322,8 @@ function replaceInlineColors(presentationId) {
   const requests = buildInlineColorRequests(allPages, COLOR_MAP);
   if (requests.length === 0) return;
 
-  // Batch in chunks of 400 to avoid hitting the ~500 request limit
-  const BATCH_SIZE = 400;
+  // Batch in chunks of 480 to avoid hitting the 500-request API limit
+  const BATCH_SIZE = 480;
   for (let i = 0; i < requests.length; i += BATCH_SIZE) {
     const chunk = requests.slice(i, i + BATCH_SIZE);
     Slides.Presentations.batchUpdate({ requests: chunk }, presentationId);
@@ -400,14 +400,14 @@ function buildFontRequests(pages, fontMap) {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetches the full presentation JSON and replaces all explicit Poppins/Figtree
- * font references with Lexend across masters, layouts, and slides.
- * Splits requests into batches of 400.
+ * Replaces all explicit Poppins/Figtree font references with Lexend across
+ * masters, layouts, and slides. Splits requests into batches.
  *
  * @param {string} presentationId
+ * @param {Object} [cachedPresentation]  Pre-fetched presentation object; fetched if omitted.
  */
-function replaceFonts(presentationId) {
-  const presentation = getPresentation(presentationId);
+function replaceFonts(presentationId, cachedPresentation) {
+  const presentation = cachedPresentation || getPresentation(presentationId);
   const allPages = [].concat(
     presentation.masters  || [],
     presentation.layouts  || [],
@@ -424,7 +424,7 @@ function replaceFonts(presentationId) {
   const requests = buildFontRequests(allPages, FONT_MAP);
   if (requests.length === 0) return;
 
-  const BATCH_SIZE = 400;
+  const BATCH_SIZE = 480;
   for (let i = 0; i < requests.length; i += BATCH_SIZE) {
     const chunk = requests.slice(i, i + BATCH_SIZE);
     Slides.Presentations.batchUpdate({ requests: chunk }, presentationId);
@@ -590,10 +590,11 @@ function buildLogoReplaceRequests(pages, pageWidth, pageHeight, newLogoUrl, dryR
  *
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]
+ * @param {Object}  [cachedPresentation]  Pre-fetched presentation object; fetched if omitted.
  */
-function replaceLogos(presentationId, dryRun) {
+function replaceLogos(presentationId, dryRun, cachedPresentation) {
   const isDryRun = dryRun === true;
-  const presentation = Slides.Presentations.get(presentationId);
+  const presentation = cachedPresentation || getPresentation(presentationId);
   const pageWidth  = presentation.pageSize.width.magnitude;
   const pageHeight = presentation.pageSize.height.magnitude;
 
@@ -653,7 +654,7 @@ function replaceLogos(presentationId, dryRun) {
  * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
  */
 function updateSlidesPresentation(presentationId, dryRun) {
-  const presentation = Slides.Presentations.get(presentationId);
+  const presentation = getPresentation(presentationId);
 
   Logger.log("Starting brand update for presentation: %s", presentationId);
 
@@ -662,14 +663,14 @@ function updateSlidesPresentation(presentationId, dryRun) {
   Logger.log("  ✓ Master theme colors updated");
 
   // 2. Inline (direct) colors across all pages
-  replaceInlineColors(presentationId);
+  replaceInlineColors(presentationId, presentation);
   Logger.log("  ✓ Inline colors replaced");
 
   // 3. Fonts across all pages
-  replaceFonts(presentationId);
+  replaceFonts(presentationId, presentation);
   Logger.log("  ✓ Fonts replaced");
 
   // 4. Logos on master/layout slides
-  replaceLogos(presentationId, dryRun);
+  replaceLogos(presentationId, dryRun, presentation);
   Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
 }

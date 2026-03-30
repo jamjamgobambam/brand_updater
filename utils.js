@@ -95,16 +95,6 @@ function normalizedRgbMatches(apiRgb, targetHex, tolerance) {
 }
 
 /**
- * Builds a publicly accessible download URL for a Google Drive file.
- * The file must be shared as "Anyone with the link can view".
- * @param {string} fileId  Google Drive file ID.
- * @returns {string}
- */
-function driveFileUrl(fileId) {
-  return `https://drive.google.com/uc?export=download&id=${fileId}`;
-}
-
-/**
  * Fetches a presentation with up to maxAttempts retries on transient errors
  * (e.g. "Empty response"). Waits 2^attempt seconds between retries.
  *
