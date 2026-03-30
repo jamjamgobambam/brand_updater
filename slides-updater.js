@@ -233,29 +233,67 @@ function buildInlineColorRequests(pages, colorMap) {
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color.rgbColor;
 
-            if (!cellRgb) return;
-            var cellNewHex = findColorMapping(cellRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
-            if (cellNewHex) {
-              requests.push({
-                updateTableCellProperties: {
-                  objectId: eid,
-                  tableRange: {
-                    location: {
-                      rowIndex: cell.location.rowIndex,
-                      columnIndex: cell.location.columnIndex,
+            if (cellRgb) {
+              var cellNewHex = findColorMapping(cellRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+              if (cellNewHex) {
+                requests.push({
+                  updateTableCellProperties: {
+                    objectId: eid,
+                    tableRange: {
+                      location: {
+                        rowIndex: cell.location.rowIndex,
+                        columnIndex: cell.location.columnIndex,
+                      },
+                      rowSpan: 1,
+                      columnSpan: 1,
                     },
-                    rowSpan: 1,
-                    columnSpan: 1,
-                  },
-                  tableCellProperties: {
-                    tableCellBackgroundFill: {
-                      solidFill: {
-                        color: { rgbColor: hexToNormalizedRgb(cellNewHex) },
+                    tableCellProperties: {
+                      tableCellBackgroundFill: {
+                        solidFill: {
+                          color: { rgbColor: hexToNormalizedRgb(cellNewHex) },
+                        },
                       },
                     },
+                    fields: "tableCellBackgroundFill.solidFill.color",
                   },
-                  fields: "tableCellBackgroundFill.solidFill.color",
-                },
+                });
+              }
+            }
+
+            // Table cell text foreground colors
+            const cellTextElements = cell.text && cell.text.textElements;
+            if (cellTextElements) {
+              cellTextElements.forEach(function(te) {
+                if (!te.textRun) return;
+                const fgRgb =
+                  te.textRun.style &&
+                  te.textRun.style.foregroundColor &&
+                  te.textRun.style.foregroundColor.opaqueColor &&
+                  te.textRun.style.foregroundColor.opaqueColor.rgbColor;
+                if (!fgRgb) return;
+                var fgNewHex = findColorMapping(fgRgb, colorMap, COLOR_DISTANCE_THRESHOLD);
+                if (fgNewHex) {
+                  requests.push({
+                    updateTextStyle: {
+                      objectId: eid,
+                      cellLocation: {
+                        rowIndex: cell.location.rowIndex,
+                        columnIndex: cell.location.columnIndex,
+                      },
+                      textRange: {
+                        type: "FIXED_RANGE",
+                        startIndex: te.startIndex !== undefined ? te.startIndex : 0,
+                        endIndex: te.endIndex,
+                      },
+                      style: {
+                        foregroundColor: {
+                          opaqueColor: { rgbColor: hexToNormalizedRgb(fgNewHex) },
+                        },
+                      },
+                      fields: "foregroundColor",
+                    },
+                  });
+                }
               });
             }
           });
@@ -345,29 +383,26 @@ function buildFontRequests(pages, fontMap) {
   pages.forEach(function(page) {
     (page.pageElements || []).forEach(function(element) {
       const eid = element.objectId;
-      const textElements =
-        element.shape &&
-        element.shape.text &&
-        element.shape.text.textElements;
 
-      if (!textElements) return;
+      // Helper: builds font requests for a single text elements array,
+      // optionally scoped to a specific table cell via cellLocation.
+      function processFontTextElements(textElements, cellLocation) {
+        if (!textElements) return;
+        textElements.forEach(function(te) {
+          if (!te.textRun) return;
+          const style = te.textRun.style || {};
 
-      textElements.forEach(function(te) {
-        if (!te.textRun) return;
-        const style = te.textRun.style || {};
+          // Prefer weightedFontFamily (includes weight), fall back to fontFamily
+          const wff = style.weightedFontFamily;
+          const fontFamily = wff ? wff.fontFamily : style.fontFamily;
+          if (!fontFamily) return; // null means inheriting — leave untouched
 
-        // Prefer weightedFontFamily (includes weight), fall back to fontFamily
-        const wff = style.weightedFontFamily;
-        const fontFamily = wff ? wff.fontFamily : style.fontFamily;
-        if (!fontFamily) return; // null means inheriting — leave untouched
-
-        var fontMatched = false;
-        fontMap.forEach(function(mapping) {
-          if (fontFamily === mapping.oldFont) {
-            fontMatched = true;
-            const existingWeight = wff ? wff.weight : 400;
-            requests.push({
-              updateTextStyle: {
+          var fontMatched = false;
+          fontMap.forEach(function(mapping) {
+            if (fontFamily === mapping.oldFont) {
+              fontMatched = true;
+              const existingWeight = wff ? wff.weight : 400;
+              var req = {
                 objectId: eid,
                 textRange: {
                   type: "FIXED_RANGE",
@@ -381,16 +416,16 @@ function buildFontRequests(pages, fontMap) {
                   },
                 },
                 fields: "weightedFontFamily",
-              },
-            });
-          }
-        });
+              };
+              if (cellLocation) req.cellLocation = cellLocation;
+              requests.push({ updateTextStyle: req });
+            }
+          });
 
-        // Replace any non-brand font not already handled by FONT_MAP
-        if (!fontMatched && BRAND_FONTS.indexOf(fontFamily) === -1) {
-          const existingWeight = wff ? wff.weight : 400;
-          requests.push({
-            updateTextStyle: {
+          // Replace any non-brand font not already handled by FONT_MAP
+          if (!fontMatched && BRAND_FONTS.indexOf(fontFamily) === -1) {
+            const existingWeight = wff ? wff.weight : 400;
+            var req = {
               objectId: eid,
               textRange: {
                 type: "FIXED_RANGE",
@@ -404,10 +439,31 @@ function buildFontRequests(pages, fontMap) {
                 },
               },
               fields: "weightedFontFamily",
-            },
+            };
+            if (cellLocation) req.cellLocation = cellLocation;
+            requests.push({ updateTextStyle: req });
+          }
+        });
+      }
+
+      // Shape text
+      processFontTextElements(
+        element.shape && element.shape.text && element.shape.text.textElements,
+        null
+      );
+
+      // Table cell text
+      const tableRows = element.table && element.table.tableRows;
+      if (tableRows) {
+        tableRows.forEach(function(row) {
+          (row.tableCells || []).forEach(function(cell) {
+            processFontTextElements(
+              cell.text && cell.text.textElements,
+              { rowIndex: cell.location.rowIndex, columnIndex: cell.location.columnIndex }
+            );
           });
-        }
-      });
+        });
+      }
     });
   });
 

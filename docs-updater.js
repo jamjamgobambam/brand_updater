@@ -269,7 +269,7 @@ function buildDocTableCellColorRequests(doc, colorMap) {
               updateTableCellStyle: {
                 tableRange:     tableRange,
                 tableCellStyle: stylePatch,
-                fields:         side + ".color",
+                fields:         side,
               },
             });
           }
