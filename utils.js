@@ -47,7 +47,7 @@ const LOGO_CONFIG = {
     // Example: "https://raw.githubusercontent.com/org/repo/main/logo.png"
     // Leave null to fall back to the Drive uc?id= URL (works only if the file
     // is shared "Anyone with the link can view" and Drive serves it redirect-free).
-    newLogoUrl:   null,
+    newLogoUrl:   "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
     minWidthPt:   20,   // Size bounds fallback — adjust based on logDocImages output
     maxWidthPt:   200,
     minHeightPt:  10,
