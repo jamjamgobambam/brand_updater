@@ -350,6 +350,33 @@ function buildDocColorRequests(segments, colorMap, namedStyleLookup) {
           });
         }
       });
+
+      // Text highlight (textStyle.backgroundColor)
+      const highlightRgb =
+        run.style.backgroundColor &&
+        run.style.backgroundColor.color &&
+        run.style.backgroundColor.color.rgbColor;
+      if (highlightRgb) {
+        colorMap.forEach(function(mapping) {
+          if (normalizedRgbMatches(highlightRgb, mapping.oldHex)) {
+            requests.push({
+              updateTextStyle: {
+                range: {
+                  startIndex: run.startIndex,
+                  endIndex:   run.endIndex,
+                  segmentId:  segment.segmentId,
+                },
+                textStyle: {
+                  backgroundColor: {
+                    color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+                  },
+                },
+                fields: "backgroundColor",
+              },
+            });
+          }
+        });
+      }
     });
   });
 
@@ -435,6 +462,105 @@ function buildDocNamedStyleColorRequests(doc, colorMap) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Builds updateParagraphStyle requests for every paragraph whose shading
+ * background color matches an entry in colorMap.
+ *
+ * @param {{ content: Object[], segmentId: string }[]} segments
+ * @param {Object[]} colorMap  Array of { oldHex, newHex } entries.
+ * @returns {Object[]}
+ */
+function buildDocParagraphShadingRequests(segments, colorMap) {
+  var requests = [];
+
+  function walkContent(contentArray, segmentId) {
+    if (!contentArray) return;
+    contentArray.forEach(function(se) {
+      if (se.paragraph) {
+        var shading =
+          se.paragraph.paragraphStyle &&
+          se.paragraph.paragraphStyle.shading &&
+          se.paragraph.paragraphStyle.shading.backgroundColor &&
+          se.paragraph.paragraphStyle.shading.backgroundColor.color &&
+          se.paragraph.paragraphStyle.shading.backgroundColor.color.rgbColor;
+        if (shading) {
+          colorMap.forEach(function(mapping) {
+            if (normalizedRgbMatches(shading, mapping.oldHex)) {
+              var startIndex = se.startIndex !== undefined ? se.startIndex : 0;
+              requests.push({
+                updateParagraphStyle: {
+                  range: {
+                    startIndex: startIndex,
+                    endIndex:   se.endIndex,
+                    segmentId:  segmentId,
+                  },
+                  paragraphStyle: {
+                    shading: {
+                      backgroundColor: {
+                        color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+                      },
+                    },
+                  },
+                  fields: "shading.backgroundColor",
+                },
+              });
+            }
+          });
+        }
+      }
+
+      if (se.table) {
+        (se.table.tableRows || []).forEach(function(row) {
+          (row.tableCells || []).forEach(function(cell) {
+            walkContent(cell.content, segmentId);
+          });
+        });
+      }
+    });
+  }
+
+  segments.forEach(function(segment) {
+    walkContent(segment.content, segment.segmentId);
+  });
+
+  return requests;
+}
+
+/**
+ * Builds an updateDocumentStyle request if the page background color matches
+ * an entry in colorMap. Returns an array of 0 or 1 requests.
+ *
+ * @param {Object}   doc       Full document object from Docs.Documents.get().
+ * @param {Object[]} colorMap  Array of { oldHex, newHex } entries.
+ * @returns {Object[]}
+ */
+function buildDocPageBackgroundRequest(doc, colorMap) {
+  var bgRgb =
+    doc.documentStyle &&
+    doc.documentStyle.background &&
+    doc.documentStyle.background.color &&
+    doc.documentStyle.background.color.rgbColor;
+
+  if (!bgRgb) return [];
+
+  var requests = [];
+  colorMap.forEach(function(mapping) {
+    if (normalizedRgbMatches(bgRgb, mapping.oldHex)) {
+      requests.push({
+        updateDocumentStyle: {
+          documentStyle: {
+            background: {
+              color: { rgbColor: hexToNormalizedRgb(mapping.newHex) },
+            },
+          },
+          fields: "background.color",
+        },
+      });
+    }
+  });
+  return requests;
+}
+
+/**
  * Fetches a document and submits all color replacement requests in a single
  * batchUpdate call.
  *
@@ -444,29 +570,35 @@ function replaceDocColors(docId) {
   const doc      = Docs.Documents.get(docId);
   const segments = collectDocContent(doc);
 
-  const nsLookup  = buildNamedStyleLookup(doc);
-  const inlineReqs = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
-  const cellReqs   = buildDocTableCellColorRequests(doc, COLOR_MAP);
+  const nsLookup       = buildNamedStyleLookup(doc);
+  const inlineReqs     = buildDocColorRequests(segments, COLOR_MAP, nsLookup);
+  const cellReqs       = buildDocTableCellColorRequests(doc, COLOR_MAP);
+  const shadingReqs    = buildDocParagraphShadingRequests(segments, COLOR_MAP);
+  const pageBgReqs     = buildDocPageBackgroundRequest(doc, COLOR_MAP);
 
-  if (inlineReqs.length === 0 && cellReqs.length === 0) {
+  if (inlineReqs.length === 0 && cellReqs.length === 0 &&
+      shadingReqs.length === 0 && pageBgReqs.length === 0) {
     Logger.log("  replaceDocColors: no color changes for %s", docId);
     return;
   }
 
-  if (inlineReqs.length > 0) {
-    Docs.Documents.batchUpdate({ requests: inlineReqs }, docId);
-    Logger.log("  replaceDocColors: %d inline requests submitted for %s", inlineReqs.length, docId);
+  // Text run foreground + highlight + paragraph shading via Advanced Service.
+  const advancedReqs = inlineReqs.concat(shadingReqs);
+  if (advancedReqs.length > 0) {
+    Docs.Documents.batchUpdate({ requests: advancedReqs }, docId);
+    Logger.log("  replaceDocColors: %d text/shading requests submitted for %s", advancedReqs.length, docId);
   }
 
-  // Table-cell background requests must go via REST (Advanced Service
-  // wrapper does not support updateTableCellStyle).
-  if (cellReqs.length > 0) {
+  // Table-cell and page-background requests via REST (Advanced Service
+  // wrapper does not support updateTableCellStyle or updateDocumentStyle
+  // reliably with nested fields).
+  const restReqs = cellReqs.concat(pageBgReqs);
+  if (restReqs.length > 0) {
     try {
-      batchUpdateDocWithUrlFetch(docId, cellReqs);
-      Logger.log("  replaceDocColors: %d cell-bg requests submitted for %s", cellReqs.length, docId);
+      batchUpdateDocWithUrlFetch(docId, restReqs);
+      Logger.log("  replaceDocColors: %d cell/page-bg requests submitted for %s", restReqs.length, docId);
     } catch (e) {
-      // Log the first request to help diagnose the structure issue
-      Logger.log("  cell-bg request FAILED (%s). First request: %s", e.message, JSON.stringify(cellReqs[0]));
+      Logger.log("  cell/page-bg request FAILED (%s). First request: %s", e.message, JSON.stringify(restReqs[0]));
       throw e;
     }
   }
