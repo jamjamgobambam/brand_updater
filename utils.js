@@ -111,7 +111,7 @@ const COLOR_DISTANCE_THRESHOLD = 15;
  * All threshold values are percentages of the slide dimensions (0.0–1.0).
  */
 const LOGO_CONFIG = {
-  newLogoFileId: "1pIoxLkryTKZjwuWliRp7DQCGKb37F_tU",
+  newLogoFileId: "1k9CbaVCdgAb5oAfbO5myAG2xH049jGlu",
   cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
   titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
   docsLogo: {
