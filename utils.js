@@ -17,20 +17,20 @@
  */
 const COLOR_MAP = [
   // ── Accent 1 — Teal ──────────────────────────────────────────────────────
-  { oldHex: "#00ADBC", newHex: "#003547" }, // v1 style guide primary teal
-  { oldHex: "#00acbc", newHex: "#003547" }, // v1 drawn variant
-  { oldHex: "#009eb0", newHex: "#003547" }, // Google Slides theme-slot variant
-  { oldHex: "#009eaf", newHex: "#003547" }, // 1-unit variant
-  { oldHex: "#0093A4", newHex: "#003547" }, // v2 style guide teal
-  { oldHex: "#0093a3", newHex: "#003547" }, // v2 drawn variant
+  { oldHex: "#00ADBC", newHex: "#6A62D9" }, // v1 style guide primary teal
+  { oldHex: "#00acbc", newHex: "#6A62D9" }, // v1 drawn variant
+  { oldHex: "#009eb0", newHex: "#6A62D9" }, // Google Slides theme-slot variant
+  { oldHex: "#009eaf", newHex: "#6A62D9" }, // 1-unit variant
+  { oldHex: "#0093A4", newHex: "#6A62D9" }, // v2 style guide teal
+  { oldHex: "#0093a3", newHex: "#6A62D9" }, // v2 drawn variant
 
   // ── Accent 2 — Purple ────────────────────────────────────────────────────
-  { oldHex: "#7665A0", newHex: "#005E54" }, // v1 style guide purple
-  { oldHex: "#7564a0", newHex: "#005E54" }, // v1 drawn variant
-  { oldHex: "#9660bf", newHex: "#005E54" }, // Google Slides theme-slot variant
-  { oldHex: "#9560bf", newHex: "#005E54" }, // 1-unit variant
-  { oldHex: "#8C52BA", newHex: "#005E54" }, // v2 style guide purple
-  { oldHex: "#8c52ba", newHex: "#005E54" }, // v2 drawn variant
+  { oldHex: "#7665A0", newHex: "#6A62D9" }, // v1 style guide purple
+  { oldHex: "#7564a0", newHex: "#6A62D9" }, // v1 drawn variant
+  { oldHex: "#9660bf", newHex: "#6A62D9" }, // Google Slides theme-slot variant
+  { oldHex: "#9560bf", newHex: "#6A62D9" }, // 1-unit variant
+  { oldHex: "#8C52BA", newHex: "#6A62D9" }, // v2 style guide purple
+  { oldHex: "#8c52ba", newHex: "#6A62D9" }, // v2 drawn variant
 
   // ── Accent 3 ─────────────────────────────────────────────────────────────
   { oldHex: "#ed6060", newHex: "#C2BB00" }, // v1 + v2 style guide strawberry
@@ -42,17 +42,23 @@ const COLOR_MAP = [
 
   // ── Accent 5 — Blue ──────────────────────────────────────────────────────
   { oldHex: "#007acc", newHex: "#ED8B16" }, // Google Slides theme-slot variant
-  { oldHex: "#0094CA", newHex: "#ED8B16" }, // v1 style guide blue accent
-  { oldHex: "#0093ca", newHex: "#ED8B16" }, // v1 drawn variant
 
   // ── Accent 6 — Yellow (target is same — normalises near-variants) ─────────
   { oldHex: "#ead300", newHex: "#ead300" },
   { oldHex: "#FFC52D", newHex: "#ead300" }, // v1 style guide bright yellow
   { oldHex: "#ffc42d", newHex: "#ead300" }, // 1-unit drawn variant
+
+  // ── Older scheme — all map to new Accent 1 purple ─────────────────────────
+  { oldHex: "#0094ca", newHex: "#6A62D9" }, // older Accent 1 (blue)
+  { oldHex: "#0094CA", newHex: "#6A62D9" }, // uppercase variant
+  { oldHex: "#0093ca", newHex: "#6A62D9" }, // 1-unit drawn variant
+  { oldHex: "#ffa400", newHex: "#6A62D9" }, // older Accent 4 (orange)
+  { oldHex: "#b9bf15", newHex: "#6A62D9" }, // older Accent 5 (yellow-green)
+  { oldHex: "#ffb81d", newHex: "#6A62D9" }, // older Accent 6 (yellow)
 ];
 
 // Target hex for theme HYPERLINK and FOLLOWED_HYPERLINK slots (same as Accent 2)
-const HYPERLINK_NEW_HEX = "#005E54";
+const HYPERLINK_NEW_HEX = "#6A62D9";
 
 /**
  * New hex values for the 6 Accent slots in the master theme ColorScheme,
@@ -61,8 +67,8 @@ const HYPERLINK_NEW_HEX = "#005E54";
  * breaks the positional slot assignment.
  */
 const ACCENT_NEW_HEXES = [
-  "#003547", // ACCENT1 — new teal
-  "#005E54", // ACCENT2 — new green
+  "#6A62D9", // ACCENT1 — new purple
+  "#6A62D9", // ACCENT2 — new purple (same as Accent 1)
   "#C2BB00", // ACCENT3 — new yellow-green
   "#E1523D", // ACCENT4 — new coral
   "#ED8B16", // ACCENT5 — new orange
@@ -73,20 +79,20 @@ const ACCENT_NEW_HEXES = [
  * Font mapping: old font family → new font family.
  */
 const FONT_MAP = [
-  { oldFont: "Poppins", newFont: "Lexend" },
-  { oldFont: "Figtree", newFont: "Lexend" },
+  { oldFont: "Poppins", newFont: "Geist" },
+  { oldFont: "Figtree", newFont: "Geist" },
 ];
 
 /**
  * Font families that are always preserved (never replaced by the fallback).
- * Poppins and Figtree are handled separately via FONT_MAP (→ Lexend) and
+ * Poppins and Figtree are handled separately via FONT_MAP (→ Geist) and
  * are intentionally excluded here so the fallback path is never needed for them.
  * Any explicit font NOT in this list and NOT in FONT_MAP will be replaced with FALLBACK_FONT.
  */
-const BRAND_FONTS = ["Short Stack", "Lexend"];
+const BRAND_FONTS = ["Short Stack", "Geist"];
 
 /** Replacement font for any non-brand explicit font. */
-const FALLBACK_FONT = "Lexend";
+const FALLBACK_FONT = "Geist";
 
 /**
  * Euclidean RGB distance threshold (0–255 scale) for near-color matching.
@@ -123,6 +129,7 @@ const COLOR_DISTANCE_THRESHOLD = 15;
  * docsLogo: legacy schema retained for the Docs updater.
  */
 const LOGO_CONFIG = {
+<<<<<<< HEAD
   newLogoFileId: "1pIoxLkryTKZjwuWliRp7DQCGKb37F_tU",
   newLogoUrl:    "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
 
@@ -164,6 +171,11 @@ const LOGO_CONFIG = {
     },
   },
 
+=======
+  newLogoFileId: "1k9CbaVCdgAb5oAfbO5myAG2xH049jGlu",
+  cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
+  titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
+>>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
   docsLogo: {
     oldSourceUri: null, // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
     // newLogoUrl: direct public image URL for insertInlineImage.

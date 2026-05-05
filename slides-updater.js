@@ -122,10 +122,17 @@ function buildInlineColorRequests(pages, colorMap) {
       const eid = element.objectId;
 
       // Shape fill
+      // Skip placeholder shapes — updateShapeProperties is forbidden on placeholders
+      // that live on a master or layout slide (Slides API restriction).
+      // Skip if propertyState is "NOT_RENDERED" — the fill is explicitly hidden.
+      // The API still returns solidFill.color for hidden fills (stored-but-not-rendered),
+      // so without this guard we'd match that color and accidentally make the fill visible.
       const shapeFillRgb =
         element.shape &&
+        !element.shape.placeholder &&
         element.shape.shapeProperties &&
         element.shape.shapeProperties.shapeBackgroundFill &&
+        element.shape.shapeProperties.shapeBackgroundFill.propertyState !== "NOT_RENDERED" &&
         element.shape.shapeProperties.shapeBackgroundFill.solidFill &&
         element.shape.shapeProperties.shapeBackgroundFill.solidFill.color &&
         element.shape.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor;
@@ -149,11 +156,13 @@ function buildInlineColorRequests(pages, colorMap) {
         }
       }
 
-      // Shape outline
+      // Shape outline — same guards: skip placeholders and hidden outlines
       const outlineRgb =
         element.shape &&
+        !element.shape.placeholder &&
         element.shape.shapeProperties &&
         element.shape.shapeProperties.outline &&
+        element.shape.shapeProperties.outline.propertyState !== "NOT_RENDERED" &&
         element.shape.shapeProperties.outline.outlineFill &&
         element.shape.shapeProperties.outline.outlineFill.solidFill &&
         element.shape.shapeProperties.outline.outlineFill.solidFill.color &&
@@ -181,8 +190,11 @@ function buildInlineColorRequests(pages, colorMap) {
       }
 
       // Text run foreground colors
+      // Placeholder shapes on masters/layouts are excluded here — updateTextStyle
+      // is also forbidden on them. They are handled by replacePlaceholderColors.
       const textElements =
         element.shape &&
+        !element.shape.placeholder &&
         element.shape.text &&
         element.shape.text.textElements;
 
@@ -231,6 +243,7 @@ function buildInlineColorRequests(pages, colorMap) {
             const cellRgb =
               cell.tableCellProperties &&
               cell.tableCellProperties.tableCellBackgroundFill &&
+              cell.tableCellProperties.tableCellBackgroundFill.propertyState !== "NOT_RENDERED" &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color.rgbColor;
@@ -477,7 +490,7 @@ function buildFontRequests(pages, fontMap) {
 // ---------------------------------------------------------------------------
 
 /**
- * Replaces all explicit Poppins/Figtree font references with Lexend across
+ * Replaces all explicit Poppins/Figtree font references with Geist across
  * masters, layouts, and slides. Splits requests into batches.
  *
  * @param {string} presentationId
@@ -717,6 +730,7 @@ function logAllImages(presentationId) {
  * @param {number} pageHeight  Slide height in EMUs.
  * @returns {{matchedBy: string, zoneName?: string} | null}
  */
+<<<<<<< HEAD
 function classifyLogoElement(element, pageWidth, pageHeight) {
   if (!element.image)     return null;
   if (!element.transform) return null;
@@ -740,6 +754,12 @@ function classifyLogoElement(element, pageWidth, pageHeight) {
   // Fallback: zone + size/aspect
   const zones = cfg.zones || [];
   if (zones.length === 0) return null;
+=======
+function isLogoElement(element, pageWidth, pageHeight, type) {
+  if (!element.image)     return false;
+  if (!element.transform) return false;
+  if (element.placeholder) return false; // picture placeholders cannot be replaced
+>>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
 
   const tx = element.transform.translateX || 0;
   const ty = element.transform.translateY || 0;
@@ -952,6 +972,65 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
 }
 
 // ---------------------------------------------------------------------------
+// replacePlaceholderColors — SlidesApp fallback for master/layout placeholders
+// ---------------------------------------------------------------------------
+
+/**
+ * Updates fill and border colors on placeholder shapes that live on master and
+ * layout slides. The REST API updateShapeProperties request is forbidden on
+ * placeholder shapes in masters/layouts, so SlidesApp is used instead.
+ *
+ * Non-placeholder shapes on masters/layouts are handled by replaceInlineColors
+ * via the REST API batch.
+ *
+ * @param {string} presentationId
+ */
+function replacePlaceholderColors(presentationId) {
+  var deck = SlidesApp.openById(presentationId);
+  var pages = [];
+  deck.getMasters().forEach(function(m) { pages.push(m); });
+  deck.getLayouts().forEach(function(l) { pages.push(l); });
+
+  pages.forEach(function(page) {
+    page.getShapes().forEach(function(shape) {
+      if (shape.getPlaceholderType() === SlidesApp.PlaceholderType.NONE) return;
+
+      // Fill
+      var fill = shape.getFill();
+      if (fill.getType() === SlidesApp.FillType.SOLID) {
+        var sc = fill.getSolidFill().getColor().asRgbColor();
+        var fillRgb = { red: sc.getRed() / 255, green: sc.getGreen() / 255, blue: sc.getBlue() / 255 };
+        var newFillHex = findColorMapping(fillRgb, COLOR_MAP, COLOR_DISTANCE_THRESHOLD);
+        if (newFillHex) fill.setSolidFill(newFillHex);
+      }
+
+      // Border
+      var border = shape.getBorder();
+      if (border.isVisible()) {
+        var lineFill = border.getLineFill();
+        if (lineFill.getType() === SlidesApp.LineFillType.SOLID) {
+          var bc = lineFill.getSolidFill().getColor().asRgbColor();
+          var borderRgb = { red: bc.getRed() / 255, green: bc.getGreen() / 255, blue: bc.getBlue() / 255 };
+          var newBorderHex = findColorMapping(borderRgb, COLOR_MAP, COLOR_DISTANCE_THRESHOLD);
+          if (newBorderHex) lineFill.setSolidFill(newBorderHex);
+        }
+      }
+
+      // Text run foreground colors
+      shape.getText().getRuns().forEach(function(run) {
+        var style = run.getTextStyle();
+        var color = style.getForegroundColor();
+        if (!color || color.getColorType() !== SlidesApp.ColorType.RGB) return;
+        var rgb = color.asRgbColor();
+        var textRgb = { red: rgb.getRed() / 255, green: rgb.getGreen() / 255, blue: rgb.getBlue() / 255 };
+        var newTextHex = findColorMapping(textRgb, COLOR_MAP, COLOR_DISTANCE_THRESHOLD);
+        if (newTextHex) style.setForegroundColor(newTextHex);
+      });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Step 10 — updateSlidesPresentation (public orchestrator)
 // ---------------------------------------------------------------------------
 
@@ -959,30 +1038,47 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
  * Runs the full brand update pipeline on a single presentation:
  *   1. Update master theme ColorScheme (Accent slots → new palette)
  *   2. Replace all inline (direct) RGB colors
+<<<<<<< HEAD
  *   3. Replace Poppins / Figtree fonts with Lexend
  *   4. Replace logo images on master, layout, and slide pages
+=======
+ *   3. Replace Poppins / Figtree fonts with Geist
+ *   4. Replace logo images on master/layout slides
+>>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
  *
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
  */
-function updateSlidesPresentation(presentationId, dryRun) {
+function updateSlidesPresentation(presentationId, dryRun, options) {
+  var opts = options || { colors: true, fonts: true, logo: true };
   const presentation = getPresentation(presentationId);
 
   Logger.log("Starting brand update for presentation: %s", presentationId);
 
-  // 1. Theme color scheme (masters only)
-  updateMasterThemeColors(presentationId, presentation.masters || []);
-  Logger.log("  ✓ Master theme colors updated");
+  if (opts.colors) {
+    updateMasterThemeColors(presentationId, presentation.masters || []);
+    Logger.log("  ✓ Master theme colors updated");
 
-  // 2. Inline (direct) colors across all pages
-  replaceInlineColors(presentationId, presentation);
-  Logger.log("  ✓ Inline colors replaced");
+    replaceInlineColors(presentationId, presentation);
+    Logger.log("  ✓ Inline colors replaced");
 
-  // 3. Fonts across all pages
-  replaceFonts(presentationId, presentation);
-  Logger.log("  ✓ Fonts replaced");
+    replacePlaceholderColors(presentationId);
+    Logger.log("  ✓ Placeholder shape colors replaced");
+  }
 
+<<<<<<< HEAD
   // 4. Logos on master, layout, and slide pages
   replaceLogos(presentationId, dryRun, presentation);
   Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
+=======
+  if (opts.fonts) {
+    replaceFonts(presentationId, presentation);
+    Logger.log("  ✓ Fonts replaced");
+  }
+
+  if (opts.logo) {
+    replaceLogos(presentationId, dryRun, presentation);
+    Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
+  }
+>>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
 }

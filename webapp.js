@@ -102,9 +102,16 @@ function resolveFileType(id) {
  *
  * @param {string}  url     Any Google Drive / Docs / Slides URL.
  * @param {boolean} dryRun  When true, logo replacement is previewed only.
+ * @param {{ colors?: boolean, fonts?: boolean, logo?: boolean }} [options]  Which update types to run (all default to true).
  * @returns {{ processed: number, failed: number, details: Object[] }}
  */
-function processUrl(url, dryRun) {
+function processUrl(url, dryRun, options) {
+  var opts = {
+    colors: !options || options.colors !== false,
+    fonts:  !options || options.fonts  !== false,
+    logo:   !options || options.logo   !== false,
+  };
+
   var parsed = extractIdAndType(url);
 
   if (parsed.type === "invalid") {
@@ -164,9 +171,9 @@ function processUrl(url, dryRun) {
   items.forEach(function(item) {
     try {
       if (item.type === "slides") {
-        updateSlidesPresentation(item.id, isDryRun);
+        updateSlidesPresentation(item.id, isDryRun, opts);
       } else if (item.type === "docs") {
-        updateDocsDocument(item.id);
+        updateDocsDocument(item.id, isDryRun, opts);
       }
       processed++;
       details.push({ name: item.name, status: "ok" });
