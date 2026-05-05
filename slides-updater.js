@@ -120,11 +120,14 @@ function buildInlineColorRequests(pages, colorMap) {
       const eid = element.objectId;
 
       // Shape fill
+      // Skip placeholder shapes — updateShapeProperties is forbidden on placeholders
+      // that live on a master or layout slide (Slides API restriction).
       // Skip if propertyState is "NOT_RENDERED" — the fill is explicitly hidden.
       // The API still returns solidFill.color for hidden fills (stored-but-not-rendered),
       // so without this guard we'd match that color and accidentally make the fill visible.
       const shapeFillRgb =
         element.shape &&
+        !element.shape.placeholder &&
         element.shape.shapeProperties &&
         element.shape.shapeProperties.shapeBackgroundFill &&
         element.shape.shapeProperties.shapeBackgroundFill.propertyState !== "NOT_RENDERED" &&
@@ -151,9 +154,10 @@ function buildInlineColorRequests(pages, colorMap) {
         }
       }
 
-      // Shape outline — same guard: skip if explicitly hidden
+      // Shape outline — same guards: skip placeholders and hidden outlines
       const outlineRgb =
         element.shape &&
+        !element.shape.placeholder &&
         element.shape.shapeProperties &&
         element.shape.shapeProperties.outline &&
         element.shape.shapeProperties.outline.propertyState !== "NOT_RENDERED" &&
@@ -829,6 +833,54 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
 }
 
 // ---------------------------------------------------------------------------
+// replacePlaceholderColors — SlidesApp fallback for master/layout placeholders
+// ---------------------------------------------------------------------------
+
+/**
+ * Updates fill and border colors on placeholder shapes that live on master and
+ * layout slides. The REST API updateShapeProperties request is forbidden on
+ * placeholder shapes in masters/layouts, so SlidesApp is used instead.
+ *
+ * Non-placeholder shapes on masters/layouts are handled by replaceInlineColors
+ * via the REST API batch.
+ *
+ * @param {string} presentationId
+ */
+function replacePlaceholderColors(presentationId) {
+  var deck = SlidesApp.openById(presentationId);
+  var pages = [];
+  deck.getMasters().forEach(function(m) { pages.push(m); });
+  deck.getLayouts().forEach(function(l) { pages.push(l); });
+
+  pages.forEach(function(page) {
+    page.getShapes().forEach(function(shape) {
+      if (shape.getPlaceholderType() === SlidesApp.PlaceholderType.NONE) return;
+
+      // Fill
+      var fill = shape.getFill();
+      if (fill.getType() === SlidesApp.FillType.SOLID) {
+        var sc = fill.getSolidFill().getColor().asRgbColor();
+        var fillRgb = { red: sc.getRed() / 255, green: sc.getGreen() / 255, blue: sc.getBlue() / 255 };
+        var newFillHex = findColorMapping(fillRgb, COLOR_MAP, COLOR_DISTANCE_THRESHOLD);
+        if (newFillHex) fill.setSolidFill(newFillHex);
+      }
+
+      // Border
+      var border = shape.getBorder();
+      if (border.isVisible()) {
+        var lineFill = border.getLineFill();
+        if (lineFill.getType() === SlidesApp.LineFillType.SOLID) {
+          var bc = lineFill.getSolidFill().getColor().asRgbColor();
+          var borderRgb = { red: bc.getRed() / 255, green: bc.getGreen() / 255, blue: bc.getBlue() / 255 };
+          var newBorderHex = findColorMapping(borderRgb, COLOR_MAP, COLOR_DISTANCE_THRESHOLD);
+          if (newBorderHex) lineFill.setSolidFill(newBorderHex);
+        }
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Step 10 — updateSlidesPresentation (public orchestrator)
 // ---------------------------------------------------------------------------
 
@@ -854,6 +906,9 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
 
     replaceInlineColors(presentationId, presentation);
     Logger.log("  ✓ Inline colors replaced");
+
+    replacePlaceholderColors(presentationId);
+    Logger.log("  ✓ Placeholder shape colors replaced");
   }
 
   if (opts.fonts) {
