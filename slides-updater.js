@@ -188,8 +188,11 @@ function buildInlineColorRequests(pages, colorMap) {
       }
 
       // Text run foreground colors
+      // Placeholder shapes on masters/layouts are excluded here — updateTextStyle
+      // is also forbidden on them. They are handled by replacePlaceholderColors.
       const textElements =
         element.shape &&
+        !element.shape.placeholder &&
         element.shape.text &&
         element.shape.text.textElements;
 
@@ -876,6 +879,17 @@ function replacePlaceholderColors(presentationId) {
           if (newBorderHex) lineFill.setSolidFill(newBorderHex);
         }
       }
+
+      // Text run foreground colors
+      shape.getText().getRuns().forEach(function(run) {
+        var style = run.getTextStyle();
+        var color = style.getForegroundColor();
+        if (!color || color.getColorType() !== SlidesApp.ColorType.RGB) return;
+        var rgb = color.asRgbColor();
+        var textRgb = { red: rgb.getRed() / 255, green: rgb.getGreen() / 255, blue: rgb.getBlue() / 255 };
+        var newTextHex = findColorMapping(textRgb, COLOR_MAP, COLOR_DISTANCE_THRESHOLD);
+        if (newTextHex) style.setForegroundColor(newTextHex);
+      });
     });
   });
 }
