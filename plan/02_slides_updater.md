@@ -41,16 +41,25 @@ Text runs with `fontFamily: null` (inheriting from the master placeholder) are l
 
 ## Logo Config
 
-Logos are identified by **position heuristics** — where the center of an image element falls as a percentage of the slide dimensions. Two logo types are matched:
+Logos are identified by a **layered detection strategy**:
 
-| Logo type | Position rule |
+1. **Primary — image source URL substring match.** If a configured substring appears in the image element's `contentUrl` or `sourceUrl`, the element is a logo regardless of position or size.
+2. **Fallback — position zone + size/aspect filter.** If the image's center falls inside one of the configured zones AND the image satisfies the size/aspect bounds, the element is a logo.
+
+Default zones (centerX/centerY as fractions of slide dimensions):
+
+| Zone | Bounds |
 |---|---|
-| Corner logo (recurring, bottom-right) | `centerX > 75%` of slide width AND `centerY > 75%` of slide height |
-| Title logo (title slide, upper-center) | `centerX` between 25–75% AND `centerY < 35%` |
+| `bottom-right`, `bottom-left`, `bottom-center` | `yMin = 0.75`, `yMax = 1.00`; x-bounds split into outer 25% / center 50% / outer 25% |
+| `top-right`, `top-left`, `top-center` | `yMin = 0.00`, `yMax = 0.35`; same x-splits |
 
-Because logos live on **master/layout slides**, each logo is replaced once there and all individual slides inherit the change automatically.
+Logos may live on master, layout, **or individual slide** pages — all three are traversed. Replacing a master/layout instance still propagates through inheritance; slide-level instances are caught directly.
 
-The new logo must be a Google Drive file shared as "Anyone with the link can view". Its Drive file ID is stored in `LOGO_CONFIG` and converted to a direct URL at runtime.
+Replacement happens per element: first via `SlidesApp.Image.replace` (fast, preserves alt-text/links). When that throws — typically `"Can't replace a placeholder image"` — the element is deleted and recreated at the same `transform` and `size` via the REST API. Recreated images are no longer placeholders, so subsequent runs use the fast path.
+
+The new logo is configured two ways:
+- `LOGO_CONFIG.newLogoFileId` — Drive file ID, fetched as a blob for the `Image.replace` path. The file does **not** need public sharing.
+- `LOGO_CONFIG.newLogoUrl` — a direct public URL (e.g. GitHub raw) used by the `createImage` recreate path, which requires a fetchable URL.
 
 ---
 
@@ -247,15 +256,45 @@ Diagnostic/discovery utility. Run this **once on a representative presentation b
 
 ### Step 15 — `LOGO_CONFIG` constant (in `utils.js`)
 
+Logos are detected by a layered strategy: an image-source URL substring match (primary) with a position-zone + size/aspect filter as a fallback.
+
 ```js
 const LOGO_CONFIG = {
-  newLogoFileId: "YOUR_DRIVE_FILE_ID",
-  cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
-  titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 }
+  newLogoFileId: "YOUR_DRIVE_FILE_ID",          // used by SlidesApp.Image.replace via DriveApp blob
+  newLogoUrl:    "https://.../logo.png",        // used by Docs + Slides delete-and-recreate fallback
+
+  slidesLogo: {
+    // Primary match: substring(s) of the existing logo's contentUrl/sourceUrl.
+    // Populate after running logAllImages on a representative deck.
+    // Empty array = URL match disabled (zone fallback only).
+    oldContentUrlSubstrings: [],
+
+    // Fallback match: named regions on the slide (centerX/centerY of the
+    // image must fall inside, as fractions of slide dims). Empty = URL only.
+    zones: [
+      { name: "bottom-right",  xMin: 0.75, xMax: 1.00, yMin: 0.75, yMax: 1.00 },
+      { name: "bottom-left",   xMin: 0.00, xMax: 0.25, yMin: 0.75, yMax: 1.00 },
+      { name: "bottom-center", xMin: 0.25, xMax: 0.75, yMin: 0.75, yMax: 1.00 },
+      { name: "top-left",      xMin: 0.00, xMax: 0.25, yMin: 0.00, yMax: 0.35 },
+      { name: "top-right",     xMin: 0.75, xMax: 1.00, yMin: 0.00, yMax: 0.35 },
+      { name: "top-center",    xMin: 0.25, xMax: 0.75, yMin: 0.00, yMax: 0.35 },
+    ],
+
+    // Applied ONLY to zone-fallback matches to filter out hero photos /
+    // decorative imagery that happen to sit in a logo zone. URL matches
+    // bypass this filter.
+    sizeBounds: {
+      minWidthPct: 0.02, maxWidthPct: 0.40,
+      minHeightPct: 0.02, maxHeightPct: 0.40,
+      minAspect: 0.20, maxAspect: 8.00,
+    },
+  },
+
+  docsLogo: { /* unchanged — see step 11 of plan/03_docs_updater.md */ },
 };
 ```
 
-Thresholds are percentages of the slide dimensions. Keeping them in a constant means you can tune the detection zone without touching any logic code.
+The two-layer model exists because URL substrings and position zones each fail in different real-world cases. Logos uploaded from disk often have no `sourceUrl` and a `contentUrl` that rotates between fetches, so URL matching can miss them; meanwhile, zone matching can over-match (a hero photo in the top-left isn't a logo). Running the layers together catches both cases — URL match locks onto the known-good logo when present, zone match catches everything else, and the size/aspect filter prevents zone matches from sweeping up unrelated imagery.
 
 ---
 
@@ -263,7 +302,7 @@ Thresholds are percentages of the slide dimensions. Keeping them in a constant m
 
 Builds `https://drive.google.com/uc?export=download&id=${fileId}`.
 
-This helper is defined in `utils.js` as a shared utility. It is **not used by the Slides logo replacement** (see Step 19 — the implementation switched to a Drive blob approach). It is retained for potential future use and is used by the Docs updater as a fallback URL format for logo insertion.
+This helper is defined in `utils.js` as a shared utility. It is **not used by the Slides logo replacement** (see Step 19 — the implementation switched to a Drive blob approach plus a public-URL recreate fallback). It is retained for potential future use and is used by the Docs updater as a fallback URL format for logo insertion.
 
 ---
 
@@ -279,54 +318,66 @@ Used in place of bare `Slides.Presentations.get()` calls in `replaceFonts`. The 
 
 ---
 
-### Step 17 — `isLogoElement(element, pageWidth, pageHeight, type)`
+### Step 17 — `classifyLogoElement(element, pageWidth, pageHeight)`
 
-- Returns `false` immediately if `element.image` is absent (non-image elements are skipped)
-- Returns `false` immediately if `element.transform` is absent — elements positioned at their default location have no explicit `transform` object in the API response; accessing `element.transform.translateX` without this guard would throw a TypeError at runtime
-- Reads `element.transform` (translateX, translateY) and `element.size` (width, height) from the element's `AffineTransform` — all values in EMUs
-- Computes `centerX = (translateX + width / 2) / pageWidth` and `centerY = (translateY + height / 2) / pageHeight`
-- Checks computed percentages against `LOGO_CONFIG.cornerLogo` or `LOGO_CONFIG.titleLogo` thresholds depending on `type`
-- Returns boolean
+Returns `null` if the element is not a logo, otherwise a match descriptor `{ matchedBy: "contentUrl" | "zone", zoneName?: string }`.
 
-EMUs (English Metric Units) are the raw unit the Slides API uses for all positions and sizes. There are 914,400 EMUs per inch and 12,700 EMUs per point. The slide's `pageSize` is also in EMUs, so dividing by it gives a clean 0.0–1.0 percentage.
+- Returns `null` if `element.image` or `element.transform` is absent (the latter guards elements at their default position, where the API omits the transform object).
+- **Primary match — URL substring:** if `LOGO_CONFIG.slidesLogo.oldContentUrlSubstrings` is non-empty AND any substring appears in `element.image.contentUrl` or `element.image.sourceUrl`, returns `{ matchedBy: "contentUrl" }`. Bypasses the size/aspect filter.
+- **Fallback match — zone + size/aspect:**
+  - Computes `centerX`, `centerY`, `widthPct`, `heightPct`, `aspect` from `element.transform` and `element.size` (EMUs ÷ slide dims; EMUs are the raw Slides API unit — 914,400 per inch, 12,700 per point).
+  - Applies `LOGO_CONFIG.slidesLogo.sizeBounds` (width %, height %, aspect bounds). Out-of-bounds → return `null`.
+  - Tests center against each entry in `LOGO_CONFIG.slidesLogo.zones`; the first containing zone wins. Returns `{ matchedBy: "zone", zoneName }`.
 
----
-
-### Step 18 — `buildLogoReplaceRequests(pages, pageWidth, pageHeight, newLogoUrl, dryRun)`
-
-- Iterates masters and layouts only (individual slides inherit — no need to traverse them)
-- For each element, calls `isLogoElement()` for both `"corner"` and `"title"` types
-- **Known limitation:** grouped elements (`element.elementGroup`) are not recursed into — if a logo is nested inside a group, it will be skipped. Use `logAllImages` output to verify; if no image appears at the expected position, a group wrapper may be the cause
-- On a match:
-  - If `dryRun` is `true`: logs the element's objectId, page name, and detected type — no request built
-  - If `dryRun` is `false`: builds a `replaceImage` request with `imageReplaceMethod: "CENTER_INSIDE"` and the new logo URL
-- Returns array of `replaceImage` request objects (empty if `dryRun`)
-
-The dry-run mode is critical for position-heuristic matching because there's no perfectly deterministic way to identify logos without a content URL. Running with `dryRun: true` first lets you review what the script would replace — and adjust the thresholds in `LOGO_CONFIG` if needed — before making any changes.
-
-`CENTER_INSIDE` preserves the original bounding box dimensions and centers the new image within it, which is the correct behavior when swapping logos of similar but not identical aspect ratios.
+This replaces the previous `isLogoElement(element, pageWidth, pageHeight, type)` helper, which checked a fixed pair of zones (`corner` and `title`) without any size filter.
 
 ---
 
-### Step 19 — `replaceLogos(presentationId, dryRun)`
+### Step 18 — `collectLogoMatches(taggedPages, pageWidth, pageHeight)`
+
+- Walks `taggedPages` (objects of shape `{ page, kind }` where `kind` is `"master"`, `"layout"`, or `"slide"`).
+- For each page element, calls `classifyLogoElement`. On a hit, pushes `{ objectId, parentPageId, pageKind, pageName, transform, size, matchedBy, zoneName }` onto the result.
+- **Known limitation:** grouped elements (`element.elementGroup`) are not recursed into.
+
+`transform` and `size` are captured per match because they are needed if `replaceLogos` has to fall back to delete-and-recreate (the new image must be created at the same position and dimensions as the original).
+
+This replaces the previous `buildLogoReplaceRequests` helper, which returned `replaceImage` REST request objects directly. Returning structured descriptors instead lets `replaceLogos` choose between the `Image.replace` path and the `deleteObject` + `createImage` path per element.
+
+---
+
+### Step 19 — `replaceLogos(presentationId, dryRun, cachedPresentation)`
 
 *Depends on steps 15, 17, 18.*
 
-- Calls `Slides.Presentations.get(presentationId)` to get presentation JSON including `pageSize`, `masters`, and `layouts`
-- Extracts `pageWidth` and `pageHeight` from `presentation.pageSize`
-- **Dry-run path:** calls `buildLogoReplaceRequests(..., null, true)` for logging only, then returns
+- Reads (or accepts a cached) `Slides.Presentations.get` response and extracts `pageWidth`/`pageHeight` from `pageSize`.
+- Builds `taggedPages` from `presentation.masters`, `presentation.layouts`, and `presentation.slides` — slide-level images are now traversed, so logos pasted directly onto an individual slide are also caught.
+- Calls `collectLogoMatches` to collect descriptors.
+- **Dry-run path:** logs every match (including `matchedBy` and `zoneName`) and returns.
 - **Live path:**
-  1. Calls `buildLogoReplaceRequests(..., "_placeholder_", false)` — the placeholder URL is never used; this call is only to collect the `objectId`s of matched logo elements
-  2. Builds a `Set` of logo `objectId`s from the returned request objects
-  3. Fetches the new logo as a blob: `DriveApp.getFileById(LOGO_CONFIG.newLogoFileId).getBlob()`
-  4. Opens the presentation via `SlidesApp.openById(presentationId)`
-  5. Iterates `deck.getMasters()` and `deck.getLayouts()`; for each image whose `objectId` is in the set, calls `img.replace(logoBlob, false)`
+  1. Indexes matches by `objectId`.
+  2. Fetches `LOGO_CONFIG.newLogoFileId` once via `DriveApp.getFileById(...).getBlob()` for the `Image.replace` path.
+  3. Iterates `deck.getMasters()`, `deck.getLayouts()`, and `deck.getSlides()`; for each image whose `objectId` matches, calls `img.replace(blob, false)` inside a `try`/`catch`. On success, marks the element handled.
+  4. For every match the SlidesApp pass did **not** handle (most commonly because Slides threw `"Can't replace a placeholder image"` or because the image was not exposed via `getImages()`), issues a per-element REST batch:
+     - `deleteObject` on the matched element id.
+     - `createImage` on the same `parentPageId` with the recorded `transform` and `size` and `LOGO_CONFIG.newLogoUrl`.
+  5. Logs per-element outcome (`replaced` / `recreated` / `failed`) and a summary count.
 
-**Why blob instead of REST `replaceImage` + URL:** The initial plan used `Slides.Presentations.batchUpdate` with a `replaceImage` REST request and a public Drive URL. In practice this approach is unreliable — the Slides REST `replaceImage` API requires the URL to be directly accessible without redirects, and Google Drive URLs (even with `export=download`) can trigger anti-abuse redirects that cause silent failures. Using `SlidesApp.Image.replace(blobSource, crop=false)` fetches the image bytes via Drive's internal service, requires no public sharing on the logo file, and produces the same scale-to-fit (CENTER_INSIDE equivalent) behavior.
+**Why per-element instead of one big batch:** A single `replaceImage` REST batch fails atomically — one bad element (e.g. a placeholder image) aborts the rest. Issuing replacements individually means a single failure is recoverable: the SlidesApp `try`/`catch` records the failure, and the recreate pass picks up exactly those elements and rebuilds them at the original position.
 
-**No public sharing required:** The new logo Drive file does **not** need to be publicly shared. `DriveApp.getFileById()` reads the file with the script owner's credentials.
+**Why delete-and-recreate handles "placeholder image":** Master and layout images are sometimes registered as `IMAGE` placeholders in the slide-master schema. Slides treats these as immutable in place — `replaceImage` and `Image.replace` both reject them. Deleting the placeholder and creating a fresh image at the same `transform` and `size` produces a regular image element that subsequent runs can replace via the normal path. The first run "promotes" a placeholder; every later run is fast.
 
-Only masters and layouts are iterated — individual slides inherit the change automatically.
+**Why `newLogoUrl` is required for the recreate path:** `createImage` in the REST API takes a public URL, not a Drive blob. `LOGO_CONFIG.newLogoUrl` is set to a stable raw URL (e.g. GitHub raw) so the recreate path works without hitting Drive redirect issues.
+
+**Trade-offs:**
+- Hyperlinks and alt-text on the original element are lost when the element is recreated. `Image.replace` preserves them; the recreate path does not. Acceptable for logos in this implementation; if needed later, capture `description`/`title` and re-apply via `updatePageElementAltText` after `createImage`.
+- `createImage` requires the new logo URL to be publicly fetchable.
+
+**Configuration workflow:**
+1. Run `logAllImages(presentationId)` on a representative deck. The output prints `contentUrl`, `sourceUrl`, size, computed center percentages, and any zone hit for every image on every page.
+2. Pick a stable substring from a known logo's `contentUrl` or `sourceUrl` and add it to `LOGO_CONFIG.slidesLogo.oldContentUrlSubstrings`. (Skip this step if URLs rotate or are missing — zones will still catch the logos.)
+3. Adjust `zones` and `sizeBounds` if the diagnostic output shows a logo falling outside the defaults.
+4. Run `replaceLogos(id, true)` — dry run — and confirm every visible logo appears in the log.
+5. Run `replaceLogos(id, false)`. A second live run should report all matches as `replaced` (no recreates), confirming the recreated images are no longer placeholders.
 
 ---
 

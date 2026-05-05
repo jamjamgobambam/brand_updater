@@ -98,16 +98,72 @@ const COLOR_DISTANCE_THRESHOLD = 15;
 
 /**
  * Logo detection config.
- * newLogoFileId: Google Drive file ID of the replacement logo.
- *   The file must be shared as "Anyone with the link can view".
- * cornerLogo: bottom-right recurring logo (centerX > xThreshold, centerY > yThreshold)
- * titleLogo:  upper-center title slide logo (xMin < centerX < xMax, centerY < yMax)
- * All threshold values are percentages of the slide dimensions (0.0–1.0).
+ *
+ * newLogoFileId: Google Drive file ID of the replacement logo (used by
+ *   SlidesApp.Image.replace via DriveApp blob — file must be shared as
+ *   "Anyone with the link can view").
+ *
+ * newLogoUrl: direct public image URL for the replacement logo. Used by:
+ *   - the Docs updater (Docs API cannot follow Drive redirects)
+ *   - the Slides delete-and-recreate fallback (createImage requires a URL)
+ *
+ * slidesLogo: layered detection config for Google Slides.
+ *   - oldContentUrlSubstrings: array of substrings to match against an
+ *     image element's contentUrl/sourceUrl. Populate by running
+ *     logAllImages() against a representative deck and copying a stable
+ *     portion of the existing logo's URL. Empty array = URL match disabled.
+ *   - zones: named regions (xMin/xMax/yMin/yMax as fractions of slide
+ *     dims, 0.0–1.0). An image whose center falls inside a zone AND
+ *     whose size/aspect satisfies sizeBounds is treated as a logo.
+ *     Empty array = zone fallback disabled (URL-only mode).
+ *   - sizeBounds: filter applied ONLY to zone-fallback matches to exclude
+ *     hero photos / decorative imagery that happen to sit in a logo zone.
+ *     URL matches bypass this filter entirely.
+ *
+ * docsLogo: legacy schema retained for the Docs updater.
  */
 const LOGO_CONFIG = {
   newLogoFileId: "1pIoxLkryTKZjwuWliRp7DQCGKb37F_tU",
-  cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
-  titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
+  newLogoUrl:    "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
+
+  slidesLogo: {
+    // Populate after running logAllImages() — e.g. ["lh3.googleusercontent.com/abc123"]
+    // or a stable portion of the original sourceUrl. Empty = skip URL matching.
+    oldContentUrlSubstrings: [],
+
+    // Named regions on the slide. centerX/centerY of the image must fall
+    // inside (xMin..xMax, yMin..yMax). Values are fractions of slide dims.
+    //
+    // DEFAULT: empty array = URL-only mode. Position fallback is OFF by
+    // default to avoid replacing unrelated imagery (e.g. toggle/button
+    // illustrations in lesson decks) on presentations where the original
+    // logo's URL has not yet been identified. Populate this array only
+    // after logAllImages() confirms the safe zones for a given template.
+    zones: [],
+
+    // Reference zone defaults — copy individual entries into `zones`
+    // above when enabling position fallback for a known template.
+    zonesReference: [
+      { name: "bottom-right",  xMin: 0.75, xMax: 1.00, yMin: 0.75, yMax: 1.00 },
+      { name: "bottom-left",   xMin: 0.00, xMax: 0.25, yMin: 0.75, yMax: 1.00 },
+      { name: "bottom-center", xMin: 0.25, xMax: 0.75, yMin: 0.75, yMax: 1.00 },
+      { name: "top-left",      xMin: 0.00, xMax: 0.25, yMin: 0.00, yMax: 0.35 },
+      { name: "top-right",     xMin: 0.75, xMax: 1.00, yMin: 0.00, yMax: 0.35 },
+      { name: "top-center",    xMin: 0.25, xMax: 0.75, yMin: 0.00, yMax: 0.35 },
+    ],
+
+    // Size/aspect filter for zone-fallback matches only. Width/height as
+    // fractions of slide dims; aspect = width / height.
+    sizeBounds: {
+      minWidthPct:  0.02,
+      maxWidthPct:  0.40,
+      minHeightPct: 0.02,
+      maxHeightPct: 0.40,
+      minAspect:    0.20,
+      maxAspect:    8.00,
+    },
+  },
+
   docsLogo: {
     oldSourceUri: null, // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
     // newLogoUrl: direct public image URL for insertInlineImage.
@@ -115,8 +171,7 @@ const LOGO_CONFIG = {
     // Set this to a direct public URL: a GitHub raw URL, Google Cloud Storage,
     // or any CDN that serves the image bytes without redirects.
     // Example: "https://raw.githubusercontent.com/org/repo/main/logo.png"
-    // Leave null to fall back to the Drive uc?id= URL (works only if the file
-    // is shared "Anyone with the link can view" and Drive serves it redirect-free).
+    // Leave null to fall back to the top-level LOGO_CONFIG.newLogoUrl.
     newLogoUrl:   "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
     minWidthPt:   20,   // Size bounds fallback — adjust based on logDocImages output
     maxWidthPt:   200,

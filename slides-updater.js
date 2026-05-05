@@ -32,20 +32,22 @@ function updateMasterThemeColors(presentationId, masters) {
 
     if (!existingColors) return;
 
-    // Deep-copy then patch only the target slots
+    // Deep-copy then patch only the target slots.
+    // NOTE: ThemeColorPair.color is a bare RgbColor ({red, green, blue}) —
+    // not an OpaqueColor wrapper. Do NOT wrap in { rgbColor: ... } here.
     const updatedColors = existingColors.map(function(entry) {
       const type = entry.type;
       const accentIndex = accentTypes.indexOf(type);
       if (accentIndex !== -1) {
         return {
           type: type,
-          color: { rgbColor: hexToNormalizedRgb(accentNewHexes[accentIndex]) },
+          color: hexToNormalizedRgb(accentNewHexes[accentIndex]),
         };
       }
       if (type === "HYPERLINK" || type === "FOLLOWED_HYPERLINK") {
         return {
           type: type,
-          color: { rgbColor: hexToNormalizedRgb(HYPERLINK_NEW_HEX) },
+          color: hexToNormalizedRgb(HYPERLINK_NEW_HEX),
         };
       }
       // DARK1, DARK2, LIGHT1, LIGHT2 — preserve unchanged
@@ -619,9 +621,11 @@ function logPresentationColors(presentationId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Logs details of every image element on master and layout slides.
- * Run once on a representative presentation to determine the correct
- * position thresholds for LOGO_CONFIG before running replaceLogos.
+ * Logs details of every image element on master, layout, AND slide pages.
+ * Run once on a representative presentation to:
+ *   1. Identify a stable substring of the existing logo's contentUrl/sourceUrl
+ *      to copy into LOGO_CONFIG.slidesLogo.oldContentUrlSubstrings.
+ *   2. Verify that each logo's center falls inside one of the configured zones.
  *
  * @param {string} presentationId
  */
@@ -631,11 +635,13 @@ function logAllImages(presentationId) {
   const pageHeight = presentation.pageSize.height.magnitude;
 
   const pages = [].concat(
-    presentation.masters || [],
-    presentation.layouts || []
+    (presentation.masters || []).map(function(p) { return { page: p, kind: "master" }; }),
+    (presentation.layouts || []).map(function(p) { return { page: p, kind: "layout" }; }),
+    (presentation.slides  || []).map(function(p) { return { page: p, kind: "slide"  }; })
   );
 
-  pages.forEach(function(page) {
+  pages.forEach(function(entry) {
+    const page = entry.page;
     const pageName = page.pageProperties && page.pageProperties.name
       ? page.pageProperties.name
       : page.objectId;
@@ -643,7 +649,8 @@ function logAllImages(presentationId) {
     (page.pageElements || []).forEach(function(element) {
       if (!element.image) return;
       if (!element.transform) {
-        Logger.log("Image [%s] on page [%s]: no transform (at default position)", element.objectId, pageName);
+        Logger.log("[%s] Image [%s] on page [%s]: no transform (at default position)",
+          entry.kind, element.objectId, pageName);
         return;
       }
 
@@ -657,110 +664,161 @@ function logAllImages(presentationId) {
       const widthPct  = w / pageWidth;
       const heightPct = h / pageHeight;
 
+      // Determine which configured zone (if any) this image's center falls in.
+      const zones = (LOGO_CONFIG.slidesLogo && LOGO_CONFIG.slidesLogo.zones) || [];
+      var zoneHit = "(none)";
+      for (var i = 0; i < zones.length; i++) {
+        const z = zones[i];
+        if (centerX >= z.xMin && centerX <= z.xMax &&
+            centerY >= z.yMin && centerY <= z.yMax) {
+          zoneHit = z.name;
+          break;
+        }
+      }
+
       Logger.log(
-        "Image [%s] on page [%s]: centerX=%.3f centerY=%.3f width=%.3f height=%.3f sourceUrl=%s",
+        "[%s] Image [%s] on page [%s]: centerX=%.3f centerY=%.3f w=%.3f h=%.3f zone=%s\n  contentUrl=%s\n  sourceUrl=%s",
+        entry.kind,
         element.objectId,
         pageName,
         centerX,
         centerY,
         widthPct,
         heightPct,
-        element.image.sourceUrl || "(none)"
+        zoneHit,
+        element.image.contentUrl || "(none)",
+        element.image.sourceUrl  || "(none)"
       );
     });
   });
 }
 
 // ---------------------------------------------------------------------------
-// Step 17 — isLogoElement
+// Step 17 — classifyLogoElement
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if an element is an image whose center falls within the
- * detection zone for the given logo type.
+ * Layered logo detection. Returns null if not a logo, otherwise a match
+ * descriptor: { matchedBy: "contentUrl"|"zone", zoneName?: string }.
  *
- * @param {Object} element    A page element from the Slides API.
- * @param {number} pageWidth  Slide width in EMUs.
- * @param {number} pageHeight Slide height in EMUs.
- * @param {"corner"|"title"} type  Which logo zone to check.
- * @returns {boolean}
+ * Primary match — image source URL substring:
+ *   If LOGO_CONFIG.slidesLogo.oldContentUrlSubstrings is non-empty AND any
+ *   substring appears in element.image.contentUrl or element.image.sourceUrl,
+ *   the element is a logo regardless of position. This match bypasses the
+ *   sizeBounds filter.
+ *
+ * Fallback match — position zone + size/aspect filter:
+ *   If the element's center falls inside any zone in LOGO_CONFIG.slidesLogo.zones
+ *   AND the element passes LOGO_CONFIG.slidesLogo.sizeBounds (width/height as
+ *   fraction of slide dims, aspect = width/height), the element is a logo.
+ *
+ * @param {Object} element     A page element from the Slides API.
+ * @param {number} pageWidth   Slide width in EMUs.
+ * @param {number} pageHeight  Slide height in EMUs.
+ * @returns {{matchedBy: string, zoneName?: string} | null}
  */
-function isLogoElement(element, pageWidth, pageHeight, type) {
-  if (!element.image)     return false;
-  if (!element.transform) return false;
+function classifyLogoElement(element, pageWidth, pageHeight) {
+  if (!element.image)     return null;
+  if (!element.transform) return null;
+
+  const cfg = LOGO_CONFIG.slidesLogo || {};
+
+  // Primary: URL substring match
+  const substrings = cfg.oldContentUrlSubstrings || [];
+  if (substrings.length > 0) {
+    const contentUrl = element.image.contentUrl || "";
+    const sourceUrl  = element.image.sourceUrl  || "";
+    for (var i = 0; i < substrings.length; i++) {
+      const s = substrings[i];
+      if (!s) continue;
+      if (contentUrl.indexOf(s) !== -1 || sourceUrl.indexOf(s) !== -1) {
+        return { matchedBy: "contentUrl" };
+      }
+    }
+  }
+
+  // Fallback: zone + size/aspect
+  const zones = cfg.zones || [];
+  if (zones.length === 0) return null;
 
   const tx = element.transform.translateX || 0;
   const ty = element.transform.translateY || 0;
   const w  = element.size.width.magnitude;
   const h  = element.size.height.magnitude;
 
-  const centerX = (tx + w / 2) / pageWidth;
-  const centerY = (ty + h / 2) / pageHeight;
+  const centerX   = (tx + w / 2) / pageWidth;
+  const centerY   = (ty + h / 2) / pageHeight;
+  const widthPct  = w / pageWidth;
+  const heightPct = h / pageHeight;
+  const aspect    = h > 0 ? w / h : 0;
 
-  if (type === "corner") {
-    return centerX > LOGO_CONFIG.cornerLogo.xThreshold &&
-           centerY > LOGO_CONFIG.cornerLogo.yThreshold;
+  // Apply size/aspect filter to zone-fallback candidates.
+  const sb = cfg.sizeBounds;
+  if (sb) {
+    if (widthPct  < sb.minWidthPct  || widthPct  > sb.maxWidthPct)  return null;
+    if (heightPct < sb.minHeightPct || heightPct > sb.maxHeightPct) return null;
+    if (aspect    < sb.minAspect    || aspect    > sb.maxAspect)    return null;
   }
-  if (type === "title") {
-    return centerX > LOGO_CONFIG.titleLogo.xMin  &&
-           centerX < LOGO_CONFIG.titleLogo.xMax  &&
-           centerY < LOGO_CONFIG.titleLogo.yMax;
+
+  for (var j = 0; j < zones.length; j++) {
+    const z = zones[j];
+    if (centerX >= z.xMin && centerX <= z.xMax &&
+        centerY >= z.yMin && centerY <= z.yMax) {
+      return { matchedBy: "zone", zoneName: z.name };
+    }
   }
-  return false;
+
+  return null;
 }
 
 // ---------------------------------------------------------------------------
-// Step 18 — buildLogoReplaceRequests
+// Step 18 — collectLogoMatches
 // ---------------------------------------------------------------------------
 
 /**
- * Iterates master and layout pages and builds replaceImage request objects
- * for every element identified as a corner or title logo.
- * In dry-run mode, logs matches instead of building requests.
+ * Walks masters, layouts, and slides and returns descriptors for every
+ * page element classified as a logo. Each descriptor records enough
+ * information to reproduce the element at the same position and size if
+ * a delete-and-recreate fallback is required.
  *
  * NOTE: Elements nested inside elementGroup are not recursed into.
- * Use logAllImages() to verify logo positions if nothing is matched.
  *
- * @param {Object[]} pages       Masters and layouts only.
- * @param {number}   pageWidth   Slide width in EMUs.
- * @param {number}   pageHeight  Slide height in EMUs.
- * @param {string}   newLogoUrl  Publicly accessible image URL for the new logo.
- * @param {boolean}  dryRun      When true, logs matches but builds no requests.
- * @returns {Object[]}           Array of replaceImage request objects.
+ * @param {Object[]} taggedPages  Array of { page, kind } where kind is
+ *                                "master" | "layout" | "slide".
+ * @param {number}   pageWidth    Slide width in EMUs.
+ * @param {number}   pageHeight   Slide height in EMUs.
+ * @returns {Object[]} Array of {
+ *     objectId, parentPageId, pageKind, pageName,
+ *     transform, size, matchedBy, zoneName
+ *   }.
  */
-function buildLogoReplaceRequests(pages, pageWidth, pageHeight, newLogoUrl, dryRun) {
-  const requests = [];
+function collectLogoMatches(taggedPages, pageWidth, pageHeight) {
+  const matches = [];
 
-  pages.forEach(function(page) {
+  taggedPages.forEach(function(entry) {
+    const page = entry.page;
     const pageName = page.pageProperties && page.pageProperties.name
       ? page.pageProperties.name
       : page.objectId;
 
     (page.pageElements || []).forEach(function(element) {
-      ["corner", "title"].forEach(function(logoType) {
-        if (!isLogoElement(element, pageWidth, pageHeight, logoType)) return;
+      const result = classifyLogoElement(element, pageWidth, pageHeight);
+      if (!result) return;
 
-        if (dryRun) {
-          Logger.log(
-            "[DRY RUN] Would replace %s logo: objectId=%s page=%s",
-            logoType,
-            element.objectId,
-            pageName
-          );
-        } else {
-          requests.push({
-            replaceImage: {
-              imageObjectId: element.objectId,
-              imageReplaceMethod: "CENTER_INSIDE",
-              url: newLogoUrl,
-            },
-          });
-        }
+      matches.push({
+        objectId:     element.objectId,
+        parentPageId: page.objectId,
+        pageKind:     entry.kind,
+        pageName:     pageName,
+        transform:    element.transform,
+        size:         element.size,
+        matchedBy:    result.matchedBy,
+        zoneName:     result.zoneName || null,
       });
     });
   });
 
-  return requests;
+  return matches;
 }
 
 // ---------------------------------------------------------------------------
@@ -768,8 +826,23 @@ function buildLogoReplaceRequests(pages, pageWidth, pageHeight, newLogoUrl, dryR
 // ---------------------------------------------------------------------------
 
 /**
- * Replaces logo images on master and layout slides using position heuristics.
+ * Replaces logo images on master, layout, AND slide pages using a layered
+ * detection strategy (image-source URL substring, falling back to position
+ * zones with a size/aspect filter).
+ *
+ * Each match is processed individually rather than as one large batch, so a
+ * single failure does not poison the rest. When SlidesApp.Image.replace
+ * fails (e.g. "can't replace a placeholder image"), the element is deleted
+ * and a fresh image is created at the same transform and size via the REST
+ * API. Recreated images are no longer placeholders, so subsequent runs
+ * succeed via the normal replace path.
+ *
  * Always run with dryRun=true first to audit matches before committing.
+ *
+ * Limitations:
+ *   - Elements nested inside elementGroup are not traversed.
+ *   - Hyperlinks and alt-text on the original element are lost when the
+ *     element is recreated (the replace path preserves them).
  *
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]
@@ -781,45 +854,101 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
   const pageWidth  = presentation.pageSize.width.magnitude;
   const pageHeight = presentation.pageSize.height.magnitude;
 
-  const mastersAndLayouts = [].concat(
-    presentation.masters || [],
-    presentation.layouts || []
+  const taggedPages = [].concat(
+    (presentation.masters || []).map(function(p) { return { page: p, kind: "master" }; }),
+    (presentation.layouts || []).map(function(p) { return { page: p, kind: "layout" }; }),
+    (presentation.slides  || []).map(function(p) { return { page: p, kind: "slide"  }; })
   );
 
-  // In dry-run mode, delegate to buildLogoReplaceRequests for logging only.
-  if (isDryRun) {
-    buildLogoReplaceRequests(mastersAndLayouts, pageWidth, pageHeight, null, true);
+  const matches = collectLogoMatches(taggedPages, pageWidth, pageHeight);
+
+  if (matches.length === 0) {
+    Logger.log("replaceLogos: no logo elements matched.");
     return;
   }
 
-  // Identify objectIds of logo elements using the existing position heuristics.
-  // Pass a placeholder URL — we only need the objectIds, not the request objects.
-  const requests = buildLogoReplaceRequests(
-    mastersAndLayouts, pageWidth, pageHeight, "_placeholder_", false
-  );
-  if (requests.length === 0) return;
-
-  const logoObjectIds = new Set(
-    requests.map(function(r) { return r.replaceImage.imageObjectId; })
-  );
-
-  // Fetch the logo blob via DriveApp — no public URL required.
-  // SlidesApp.Image.replace(blobSource, crop=false) scales to fit the existing
-  // element bounds while preserving aspect ratio (equivalent to CENTER_INSIDE).
-  const logoBlob = DriveApp.getFileById(LOGO_CONFIG.newLogoFileId).getBlob();
-  const deck = SlidesApp.openById(presentationId);
-
-  deck.getMasters().forEach(function(master) {
-    master.getImages().forEach(function(img) {
-      if (logoObjectIds.has(img.getObjectId())) img.replace(logoBlob, false);
+  if (isDryRun) {
+    matches.forEach(function(m) {
+      Logger.log(
+        "[DRY RUN] Would replace logo: objectId=%s pageKind=%s page=%s matchedBy=%s zone=%s",
+        m.objectId, m.pageKind, m.pageName, m.matchedBy, m.zoneName || "-"
+      );
     });
+    Logger.log("replaceLogos: %d match(es) found (dry run).", matches.length);
+    return;
+  }
+
+  // Build an objectId → match descriptor index for quick lookup during
+  // the SlidesApp pass.
+  const matchById = {};
+  matches.forEach(function(m) { matchById[m.objectId] = m; });
+
+  // Fetch the logo blob once for the SlidesApp.Image.replace path.
+  const logoBlob   = DriveApp.getFileById(LOGO_CONFIG.newLogoFileId).getBlob();
+  const newLogoUrl = LOGO_CONFIG.newLogoUrl;
+  const deck       = SlidesApp.openById(presentationId);
+
+  // Track which matches succeeded via Image.replace so we can recreate the rest.
+  const handled = {};
+  var replacedCount  = 0;
+  var recreatedCount = 0;
+  var failedCount    = 0;
+
+  function tryReplaceImages(images) {
+    images.forEach(function(img) {
+      const oid = img.getObjectId();
+      if (!matchById[oid] || handled[oid]) return;
+      try {
+        img.replace(logoBlob, false);
+        handled[oid] = "replaced";
+        replacedCount++;
+        Logger.log("replaceLogos: replaced objectId=%s", oid);
+      } catch (err) {
+        // Most commonly: "Can't replace a placeholder image."
+        Logger.log("replaceLogos: replace failed for objectId=%s — %s. Will recreate.",
+          oid, err && err.message ? err.message : err);
+      }
+    });
+  }
+
+  deck.getMasters().forEach(function(p) { tryReplaceImages(p.getImages()); });
+  deck.getLayouts().forEach(function(p) { tryReplaceImages(p.getImages()); });
+  deck.getSlides().forEach(function(p)  { tryReplaceImages(p.getImages()); });
+
+  // Recreate any matches that Image.replace did not handle (placeholders or
+  // elements not exposed via SlidesApp.getImages()).
+  matches.forEach(function(m) {
+    if (handled[m.objectId]) return;
+
+    try {
+      const requests = [
+        { deleteObject: { objectId: m.objectId } },
+        {
+          createImage: {
+            url: newLogoUrl,
+            elementProperties: {
+              pageObjectId: m.parentPageId,
+              size:         m.size,
+              transform:    m.transform,
+            },
+          },
+        },
+      ];
+      Slides.Presentations.batchUpdate({ requests: requests }, presentationId);
+      handled[m.objectId] = "recreated";
+      recreatedCount++;
+      Logger.log("replaceLogos: recreated objectId=%s on page=%s (matchedBy=%s zone=%s)",
+        m.objectId, m.pageName, m.matchedBy, m.zoneName || "-");
+    } catch (err) {
+      handled[m.objectId] = "failed";
+      failedCount++;
+      Logger.log("replaceLogos: FAILED to recreate objectId=%s — %s",
+        m.objectId, err && err.message ? err.message : err);
+    }
   });
 
-  deck.getLayouts().forEach(function(layout) {
-    layout.getImages().forEach(function(img) {
-      if (logoObjectIds.has(img.getObjectId())) img.replace(logoBlob, false);
-    });
-  });
+  Logger.log("replaceLogos: done. replaced=%d recreated=%d failed=%d (of %d matches)",
+    replacedCount, recreatedCount, failedCount, matches.length);
 }
 
 // ---------------------------------------------------------------------------
@@ -831,7 +960,7 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
  *   1. Update master theme ColorScheme (Accent slots → new palette)
  *   2. Replace all inline (direct) RGB colors
  *   3. Replace Poppins / Figtree fonts with Lexend
- *   4. Replace logo images on master/layout slides
+ *   4. Replace logo images on master, layout, and slide pages
  *
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
@@ -853,7 +982,7 @@ function updateSlidesPresentation(presentationId, dryRun) {
   replaceFonts(presentationId, presentation);
   Logger.log("  ✓ Fonts replaced");
 
-  // 4. Logos on master/layout slides
+  // 4. Logos on master, layout, and slide pages
   replaceLogos(presentationId, dryRun, presentation);
   Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
 }
