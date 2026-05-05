@@ -20,8 +20,8 @@ Same as Slides — shared from `utils.js`:
 
 | Accent slot | Old hex | New hex |
 |---|---|---|
-| Accent 1 | #009eb0 | #003547 |
-| Accent 2, Link, and Followed Hyperlink | #9660bf | #005E54 |
+| Accent 1 | #009eb0 | #6A62D9 |
+| Accent 2, Link, and Followed Hyperlink | #9660bf | #6A62D9 |
 | Accent 3 | #ed6060 | #C2BB00 |
 | Accent 4 | #3ea33e | #E1523D |
 | Accent 5 | #007acc | #ED8B16 |
@@ -35,8 +35,8 @@ Same as Slides — shared from `utils.js`:
 
 | Old font | New font |
 |---|---|
-| Poppins | Lexend |
-| Figtree | Lexend |
+| Poppins | Geist |
+| Figtree | Geist |
 
 ---
 
