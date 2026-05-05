@@ -1121,7 +1121,7 @@ function replaceDocLogos(docId, dryRun) {
 /**
  * Runs the full brand update pipeline on a single Google Doc:
  *   1. replaceDocColors  — explicit inline foreground color overrides
- *   2. replaceDocFonts   — Poppins / Figtree → Lexend
+ *   2. replaceDocFonts   — Poppins / Figtree → Geist
  *   3. replaceDocLogos   — delete + re-insert logo images
  *
  * Each step can be called independently for isolated testing.

@@ -475,7 +475,7 @@ function buildFontRequests(pages, fontMap) {
 // ---------------------------------------------------------------------------
 
 /**
- * Replaces all explicit Poppins/Figtree font references with Lexend across
+ * Replaces all explicit Poppins/Figtree font references with Geist across
  * masters, layouts, and slides. Splits requests into batches.
  *
  * @param {string} presentationId
@@ -830,7 +830,7 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
  * Runs the full brand update pipeline on a single presentation:
  *   1. Update master theme ColorScheme (Accent slots → new palette)
  *   2. Replace all inline (direct) RGB colors
- *   3. Replace Poppins / Figtree fonts with Lexend
+ *   3. Replace Poppins / Figtree fonts with Geist
  *   4. Replace logo images on master/layout slides
  *
  * @param {string}  presentationId

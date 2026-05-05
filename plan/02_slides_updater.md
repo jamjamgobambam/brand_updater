@@ -17,8 +17,8 @@ Uses the **Advanced Slides REST API** (not the basic `SlidesApp` service). A sin
 
 | Accent slot | Old hex | New hex |
 |---|---|---|
-| Accent 1 | #009eb0 | #003547 |
-| Accent 2, Link, and Followed Hyperlink | #9660bf | #005E54 |
+| Accent 1 | #009eb0 | #6A62D9 |
+| Accent 2, Link, and Followed Hyperlink | #9660bf | #6A62D9 |
 | Accent 3 | #ed6060 | #C2BB00 |
 | Accent 4 | #3ea33e | #E1523D |
 | Accent 5 | #007acc | #ED8B16 |
@@ -32,8 +32,8 @@ Uses the **Advanced Slides REST API** (not the basic `SlidesApp` service). A sin
 
 | Old font | New font |
 |---|---|
-| Poppins | Lexend |
-| Figtree | Lexend |
+| Poppins | Geist |
+| Figtree | Geist |
 
 Text runs with `fontFamily: null` (inheriting from the master placeholder) are left untouched — they pick up the new font automatically once the master's own text runs are updated. Text runs with any other explicit font are also left untouched.
 
