@@ -701,6 +701,7 @@ function logAllImages(presentationId) {
 function isLogoElement(element, pageWidth, pageHeight, type) {
   if (!element.image)     return false;
   if (!element.transform) return false;
+  if (element.placeholder) return false; // picture placeholders cannot be replaced
 
   const tx = element.transform.translateX || 0;
   const ty = element.transform.translateY || 0;
