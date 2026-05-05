@@ -39,13 +39,13 @@ function updateMasterThemeColors(presentationId, masters) {
       if (accentIndex !== -1) {
         return {
           type: type,
-          color: { rgbColor: hexToNormalizedRgb(accentNewHexes[accentIndex]) },
+          color: hexToNormalizedRgb(accentNewHexes[accentIndex]),
         };
       }
       if (type === "HYPERLINK" || type === "FOLLOWED_HYPERLINK") {
         return {
           type: type,
-          color: { rgbColor: hexToNormalizedRgb(HYPERLINK_NEW_HEX) },
+          color: hexToNormalizedRgb(HYPERLINK_NEW_HEX),
         };
       }
       // DARK1, DARK2, LIGHT1, LIGHT2 — preserve unchanged
