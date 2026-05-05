@@ -120,10 +120,14 @@ function buildInlineColorRequests(pages, colorMap) {
       const eid = element.objectId;
 
       // Shape fill
+      // Skip if propertyState is "NOT_RENDERED" — the fill is explicitly hidden.
+      // The API still returns solidFill.color for hidden fills (stored-but-not-rendered),
+      // so without this guard we'd match that color and accidentally make the fill visible.
       const shapeFillRgb =
         element.shape &&
         element.shape.shapeProperties &&
         element.shape.shapeProperties.shapeBackgroundFill &&
+        element.shape.shapeProperties.shapeBackgroundFill.propertyState !== "NOT_RENDERED" &&
         element.shape.shapeProperties.shapeBackgroundFill.solidFill &&
         element.shape.shapeProperties.shapeBackgroundFill.solidFill.color &&
         element.shape.shapeProperties.shapeBackgroundFill.solidFill.color.rgbColor;
@@ -147,11 +151,12 @@ function buildInlineColorRequests(pages, colorMap) {
         }
       }
 
-      // Shape outline
+      // Shape outline — same guard: skip if explicitly hidden
       const outlineRgb =
         element.shape &&
         element.shape.shapeProperties &&
         element.shape.shapeProperties.outline &&
+        element.shape.shapeProperties.outline.propertyState !== "NOT_RENDERED" &&
         element.shape.shapeProperties.outline.outlineFill &&
         element.shape.shapeProperties.outline.outlineFill.solidFill &&
         element.shape.shapeProperties.outline.outlineFill.solidFill.color &&
@@ -229,6 +234,7 @@ function buildInlineColorRequests(pages, colorMap) {
             const cellRgb =
               cell.tableCellProperties &&
               cell.tableCellProperties.tableCellBackgroundFill &&
+              cell.tableCellProperties.tableCellBackgroundFill.propertyState !== "NOT_RENDERED" &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color &&
               cell.tableCellProperties.tableCellBackgroundFill.solidFill.color.rgbColor;
