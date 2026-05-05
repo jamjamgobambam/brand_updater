@@ -42,13 +42,19 @@ const COLOR_MAP = [
 
   // ── Accent 5 — Blue ──────────────────────────────────────────────────────
   { oldHex: "#007acc", newHex: "#ED8B16" }, // Google Slides theme-slot variant
-  { oldHex: "#0094CA", newHex: "#ED8B16" }, // v1 style guide blue accent
-  { oldHex: "#0093ca", newHex: "#ED8B16" }, // v1 drawn variant
 
   // ── Accent 6 — Yellow (target is same — normalises near-variants) ─────────
   { oldHex: "#ead300", newHex: "#ead300" },
   { oldHex: "#FFC52D", newHex: "#ead300" }, // v1 style guide bright yellow
   { oldHex: "#ffc42d", newHex: "#ead300" }, // 1-unit drawn variant
+
+  // ── Older scheme — all map to new Accent 1 purple ─────────────────────────
+  { oldHex: "#0094ca", newHex: "#6A62D9" }, // older Accent 1 (blue)
+  { oldHex: "#0094CA", newHex: "#6A62D9" }, // uppercase variant
+  { oldHex: "#0093ca", newHex: "#6A62D9" }, // 1-unit drawn variant
+  { oldHex: "#ffa400", newHex: "#6A62D9" }, // older Accent 4 (orange)
+  { oldHex: "#b9bf15", newHex: "#6A62D9" }, // older Accent 5 (yellow-green)
+  { oldHex: "#ffb81d", newHex: "#6A62D9" }, // older Accent 6 (yellow)
 ];
 
 // Target hex for theme HYPERLINK and FOLLOWED_HYPERLINK slots (same as Accent 2)
