@@ -1130,28 +1130,35 @@ function replaceDocLogos(docId, dryRun) {
  * @param {string}  docId
  * @param {boolean} [dryRun=false]  Passed through to replaceDocLogos.
  */
-function updateDocsDocument(docId, dryRun) {
+function updateDocsDocument(docId, dryRun, options) {
+  var opts = options || { colors: true, fonts: true, logo: true };
   Logger.log("Starting brand update for document: %s", docId);
 
-  try {
-    replaceDocColors(docId);
-  } catch (e) {
-    Logger.log("  ERROR in replaceDocColors: %s", e.message);
-    throw new Error("replaceDocColors failed: " + e.message);
+  if (opts.colors) {
+    try {
+      replaceDocColors(docId);
+    } catch (e) {
+      Logger.log("  ERROR in replaceDocColors: %s", e.message);
+      throw new Error("replaceDocColors failed: " + e.message);
+    }
   }
 
-  try {
-    replaceDocFonts(docId);
-  } catch (e) {
-    Logger.log("  ERROR in replaceDocFonts: %s", e.message);
-    throw new Error("replaceDocFonts failed: " + e.message);
+  if (opts.fonts) {
+    try {
+      replaceDocFonts(docId);
+    } catch (e) {
+      Logger.log("  ERROR in replaceDocFonts: %s", e.message);
+      throw new Error("replaceDocFonts failed: " + e.message);
+    }
   }
 
-  try {
-    replaceDocLogos(docId, dryRun);
-  } catch (e) {
-    Logger.log("  ERROR in replaceDocLogos: %s", e.message);
-    throw new Error("replaceDocLogos failed: " + e.message);
+  if (opts.logo) {
+    try {
+      replaceDocLogos(docId, dryRun);
+    } catch (e) {
+      Logger.log("  ERROR in replaceDocLogos: %s", e.message);
+      throw new Error("replaceDocLogos failed: " + e.message);
+    }
   }
 
   Logger.log("Done: %s", docId);

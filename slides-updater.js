@@ -836,24 +836,27 @@ function replaceLogos(presentationId, dryRun, cachedPresentation) {
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
  */
-function updateSlidesPresentation(presentationId, dryRun) {
+function updateSlidesPresentation(presentationId, dryRun, options) {
+  var opts = options || { colors: true, fonts: true, logo: true };
   const presentation = getPresentation(presentationId);
 
   Logger.log("Starting brand update for presentation: %s", presentationId);
 
-  // 1. Theme color scheme (masters only)
-  updateMasterThemeColors(presentationId, presentation.masters || []);
-  Logger.log("  ✓ Master theme colors updated");
+  if (opts.colors) {
+    updateMasterThemeColors(presentationId, presentation.masters || []);
+    Logger.log("  ✓ Master theme colors updated");
 
-  // 2. Inline (direct) colors across all pages
-  replaceInlineColors(presentationId, presentation);
-  Logger.log("  ✓ Inline colors replaced");
+    replaceInlineColors(presentationId, presentation);
+    Logger.log("  ✓ Inline colors replaced");
+  }
 
-  // 3. Fonts across all pages
-  replaceFonts(presentationId, presentation);
-  Logger.log("  ✓ Fonts replaced");
+  if (opts.fonts) {
+    replaceFonts(presentationId, presentation);
+    Logger.log("  ✓ Fonts replaced");
+  }
 
-  // 4. Logos on master/layout slides
-  replaceLogos(presentationId, dryRun, presentation);
-  Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
+  if (opts.logo) {
+    replaceLogos(presentationId, dryRun, presentation);
+    Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
+  }
 }
