@@ -113,6 +113,49 @@ const COLOR_DISTANCE_THRESHOLD = 15;
  * All threshold values are percentages of the slide dimensions (0.0–1.0).
  */
 const LOGO_CONFIG = {
+<<<<<<< HEAD
+  newLogoFileId: "1pIoxLkryTKZjwuWliRp7DQCGKb37F_tU",
+  newLogoUrl:    "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
+
+  slidesLogo: {
+    // Populate after running logAllImages() — e.g. ["lh3.googleusercontent.com/abc123"]
+    // or a stable portion of the original sourceUrl. Empty = skip URL matching.
+    oldContentUrlSubstrings: [],
+
+    // Named regions on the slide. centerX/centerY of the image must fall
+    // inside (xMin..xMax, yMin..yMax). Values are fractions of slide dims.
+    //
+    // DEFAULT: empty array = URL-only mode. Position fallback is OFF by
+    // default to avoid replacing unrelated imagery (e.g. toggle/button
+    // illustrations in lesson decks) on presentations where the original
+    // logo's URL has not yet been identified. Populate this array only
+    // after logAllImages() confirms the safe zones for a given template.
+    zones: [],
+
+    // Reference zone defaults — copy individual entries into `zones`
+    // above when enabling position fallback for a known template.
+    zonesReference: [
+      { name: "bottom-right",  xMin: 0.75, xMax: 1.00, yMin: 0.75, yMax: 1.00 },
+      { name: "bottom-left",   xMin: 0.00, xMax: 0.25, yMin: 0.75, yMax: 1.00 },
+      { name: "bottom-center", xMin: 0.25, xMax: 0.75, yMin: 0.75, yMax: 1.00 },
+      { name: "top-left",      xMin: 0.00, xMax: 0.25, yMin: 0.00, yMax: 0.35 },
+      { name: "top-right",     xMin: 0.75, xMax: 1.00, yMin: 0.00, yMax: 0.35 },
+      { name: "top-center",    xMin: 0.25, xMax: 0.75, yMin: 0.00, yMax: 0.35 },
+    ],
+
+    // Size/aspect filter for zone-fallback matches only. Width/height as
+    // fractions of slide dims; aspect = width / height.
+    sizeBounds: {
+      minWidthPct:  0.02,
+      maxWidthPct:  0.40,
+      minHeightPct: 0.02,
+      maxHeightPct: 0.40,
+      minAspect:    0.20,
+      maxAspect:    8.00,
+    },
+  },
+
+=======
   newLogoFileId: "1k9CbaVCdgAb5oAfbO5myAG2xH049jGlu",
   // cornerLogo / titleLogo position thresholds are no longer used for slides
   // (Gemini-based classifier handles every image), but kept for reference and

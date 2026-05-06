@@ -32,7 +32,9 @@ function updateMasterThemeColors(presentationId, masters) {
 
     if (!existingColors) return;
 
-    // Deep-copy then patch only the target slots
+    // Deep-copy then patch only the target slots.
+    // NOTE: ThemeColorPair.color is a bare RgbColor ({red, green, blue}) —
+    // not an OpaqueColor wrapper. Do NOT wrap in { rgbColor: ... } here.
     const updatedColors = existingColors.map(function(entry) {
       const type = entry.type;
       const accentIndex = accentTypes.indexOf(type);
@@ -632,9 +634,11 @@ function logPresentationColors(presentationId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Logs details of every image element on master and layout slides.
- * Run once on a representative presentation to determine the correct
- * position thresholds for LOGO_CONFIG before running replaceLogos.
+ * Logs details of every image element on master, layout, AND slide pages.
+ * Run once on a representative presentation to:
+ *   1. Identify a stable substring of the existing logo's contentUrl/sourceUrl
+ *      to copy into LOGO_CONFIG.slidesLogo.oldContentUrlSubstrings.
+ *   2. Verify that each logo's center falls inside one of the configured zones.
  *
  * @param {string} presentationId
  */
@@ -644,11 +648,13 @@ function logAllImages(presentationId) {
   const pageHeight = presentation.pageSize.height.magnitude;
 
   const pages = [].concat(
-    presentation.masters || [],
-    presentation.layouts || []
+    (presentation.masters || []).map(function(p) { return { page: p, kind: "master" }; }),
+    (presentation.layouts || []).map(function(p) { return { page: p, kind: "layout" }; }),
+    (presentation.slides  || []).map(function(p) { return { page: p, kind: "slide"  }; })
   );
 
-  pages.forEach(function(page) {
+  pages.forEach(function(entry) {
+    const page = entry.page;
     const pageName = page.pageProperties && page.pageProperties.name
       ? page.pageProperties.name
       : page.objectId;
@@ -656,7 +662,8 @@ function logAllImages(presentationId) {
     (page.pageElements || []).forEach(function(element) {
       if (!element.image) return;
       if (!element.transform) {
-        Logger.log("Image [%s] on page [%s]: no transform (at default position)", element.objectId, pageName);
+        Logger.log("[%s] Image [%s] on page [%s]: no transform (at default position)",
+          entry.kind, element.objectId, pageName);
         return;
       }
 
@@ -670,15 +677,30 @@ function logAllImages(presentationId) {
       const widthPct  = w / pageWidth;
       const heightPct = h / pageHeight;
 
+      // Determine which configured zone (if any) this image's center falls in.
+      const zones = (LOGO_CONFIG.slidesLogo && LOGO_CONFIG.slidesLogo.zones) || [];
+      var zoneHit = "(none)";
+      for (var i = 0; i < zones.length; i++) {
+        const z = zones[i];
+        if (centerX >= z.xMin && centerX <= z.xMax &&
+            centerY >= z.yMin && centerY <= z.yMax) {
+          zoneHit = z.name;
+          break;
+        }
+      }
+
       Logger.log(
-        "Image [%s] on page [%s]: centerX=%.3f centerY=%.3f width=%.3f height=%.3f sourceUrl=%s",
+        "[%s] Image [%s] on page [%s]: centerX=%.3f centerY=%.3f w=%.3f h=%.3f zone=%s\n  contentUrl=%s\n  sourceUrl=%s",
+        entry.kind,
         element.objectId,
         pageName,
         centerX,
         centerY,
         widthPct,
         heightPct,
-        element.image.sourceUrl || "(none)"
+        zoneHit,
+        element.image.contentUrl || "(none)",
+        element.image.sourceUrl  || "(none)"
       );
     });
   });
@@ -1206,8 +1228,13 @@ function replacePlaceholderColors(presentationId) {
  * Runs the full brand update pipeline on a single presentation:
  *   1. Update master theme ColorScheme (Accent slots → new palette)
  *   2. Replace all inline (direct) RGB colors
+<<<<<<< HEAD
+ *   3. Replace Poppins / Figtree fonts with Lexend
+ *   4. Replace logo images on master, layout, and slide pages
+=======
  *   3. Replace Poppins / Figtree fonts with Geist
  *   4. Replace logo images on master/layout slides
+>>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
  *
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
@@ -1229,6 +1256,11 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
     Logger.log("  ✓ Placeholder shape colors replaced");
   }
 
+<<<<<<< HEAD
+  // 4. Logos on master, layout, and slide pages
+  replaceLogos(presentationId, dryRun, presentation);
+  Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
+=======
   if (opts.fonts) {
     replaceFonts(presentationId, presentation);
     Logger.log("  ✓ Fonts replaced");
@@ -1238,4 +1270,5 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
     replaceLogos(presentationId, dryRun, presentation);
     Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
   }
+>>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
 }
