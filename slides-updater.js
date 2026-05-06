@@ -685,96 +685,341 @@ function logAllImages(presentationId) {
 }
 
 // ---------------------------------------------------------------------------
-// Step 17 — isLogoElement
+// Step 17 — Gemini-based logo replacement
 // ---------------------------------------------------------------------------
 
 /**
- * Returns true if an element is an image whose center falls within the
- * detection zone for the given logo type.
+ * Walks every image on a Slides page (including images nested in groups) and
+ * applies the supplied callback. Tables in Slides cannot contain images so
+ * they are intentionally not traversed here.
  *
- * @param {Object} element    A page element from the Slides API.
- * @param {number} pageWidth  Slide width in EMUs.
- * @param {number} pageHeight Slide height in EMUs.
- * @param {"corner"|"title"} type  Which logo zone to check.
- * @returns {boolean}
+ * @param {SlidesApp.Page} page
+ * @param {(image: SlidesApp.Image, page: SlidesApp.Page) => void} fn
  */
-function isLogoElement(element, pageWidth, pageHeight, type) {
-  if (!element.image)     return false;
-  if (!element.transform) return false;
-  if (element.placeholder) return false; // picture placeholders cannot be replaced
-
-  const tx = element.transform.translateX || 0;
-  const ty = element.transform.translateY || 0;
-  const w  = element.size.width.magnitude;
-  const h  = element.size.height.magnitude;
-
-  const centerX = (tx + w / 2) / pageWidth;
-  const centerY = (ty + h / 2) / pageHeight;
-
-  if (type === "corner") {
-    return centerX > LOGO_CONFIG.cornerLogo.xThreshold &&
-           centerY > LOGO_CONFIG.cornerLogo.yThreshold;
-  }
-  if (type === "title") {
-    return centerX > LOGO_CONFIG.titleLogo.xMin  &&
-           centerX < LOGO_CONFIG.titleLogo.xMax  &&
-           centerY < LOGO_CONFIG.titleLogo.yMax;
-  }
-  return false;
+function forEachSlidesImage_(page, fn) {
+  page.getImages().forEach(function(img) { fn(img, page); });
+  page.getGroups().forEach(function(group) { walkSlidesGroupImages_(group, page, fn); });
 }
 
-// ---------------------------------------------------------------------------
-// Step 18 — buildLogoReplaceRequests
-// ---------------------------------------------------------------------------
+function walkSlidesGroupImages_(group, page, fn) {
+  group.getChildren().forEach(function(child) {
+    var t = child.getPageElementType();
+    if (t === SlidesApp.PageElementType.IMAGE) {
+      fn(child.asImage(), page);
+    } else if (t === SlidesApp.PageElementType.GROUP) {
+      walkSlidesGroupImages_(child.asGroup(), page, fn);
+    }
+  });
+}
 
 /**
- * Iterates master and layout pages and builds replaceImage request objects
- * for every element identified as a corner or title logo.
- * In dry-run mode, logs matches instead of building requests.
+ * Replace a single image element with the new CodeAI logo.
  *
- * NOTE: Elements nested inside elementGroup are not recursed into.
- * Use logAllImages() to verify logo positions if nothing is matched.
+ * The new logo is sized by TARGET WIDTH (height follows the new logo's
+ * natural aspect ratio), chosen by the original's position on the slide:
  *
- * @param {Object[]} pages       Masters and layouts only.
- * @param {number}   pageWidth   Slide width in EMUs.
- * @param {number}   pageHeight  Slide height in EMUs.
- * @param {string}   newLogoUrl  Publicly accessible image URL for the new logo.
- * @param {boolean}  dryRun      When true, logs matches but builds no requests.
- * @returns {Object[]}           Array of replaceImage request objects.
+ *   - Top-left header band    → width = max(origWidth, HEADER_LOGO_MIN_WIDTH_PT)
+ *                                and adjacent text shapes are shifted right
+ *                                so they don't overlap the (square-ish)
+ *                                replacement logo.
+ *   - Top-center title band   → width = origWidth * TITLE_LOGO_WIDTH_SCALE
+ *   - Bottom-right corner band → width = max(origWidth, CORNER_LOGO_MIN_WIDTH_PT)
+ *   - Anywhere else            → width = origWidth * LOGO_SCALE
+ *
+ * The replacement is centered on the original's center, then clamped so the
+ * new logo never crosses the slide edge (LOGO_SLIDE_MARGIN of padding).
+ *
+ * Sizing by width (not by a uniform W×H scale of the original box) matters
+ * because the legacy wordmark was wide-and-short while the new logo is
+ * roughly square — scaling by height made the replacement look tiny.
+ *
+ * @param {SlidesApp.Image} image  The image to replace.
+ * @param {SlidesApp.Page} page    The page the image belongs to.
+ * @param {number} pageWidth       Slide width in points.
+ * @param {number} pageHeight      Slide height in points.
+ * @param {SlidesApp.Page[]} [downstreamPages]
+ *        Pages whose shapes inherit from `page` (e.g. layouts of a master,
+ *        or slides of a layout). Used by the header-band shift to reach
+ *        slide-level text boxes when the logo lives on the master/layout.
  */
-function buildLogoReplaceRequests(pages, pageWidth, pageHeight, newLogoUrl, dryRun) {
-  const requests = [];
+function replaceSlidesLogoImage_(image, page, pageWidth, pageHeight, downstreamPages) {
+  const left = image.getLeft();
+  const top  = image.getTop();
+  const w    = image.getWidth();
+  const h    = image.getHeight();
+  const rotation = image.getRotation ? image.getRotation() : 0;
 
-  pages.forEach(function(page) {
-    const pageName = page.pageProperties && page.pageProperties.name
-      ? page.pageProperties.name
-      : page.objectId;
+  // Original center as a fraction of slide dimensions, used to pick a
+  // position-aware target width.
+  const centerX = pageWidth  ? (left + w / 2) / pageWidth  : 0.5;
+  const centerY = pageHeight ? (top  + h / 2) / pageHeight : 0.5;
 
-    (page.pageElements || []).forEach(function(element) {
-      ["corner", "title"].forEach(function(logoType) {
-        if (!isLogoElement(element, pageWidth, pageHeight, logoType)) return;
+  const titleCfg  = LOGO_CONFIG.titleLogo;
+  const cornerCfg = LOGO_CONFIG.cornerLogo;
+  const headerCfg = LOGO_CONFIG.headerLogo;
+  const inHeaderBand = !!headerCfg &&
+    centerX <= headerCfg.xMax &&
+    centerY <= headerCfg.yMax;
+  const inTitleBand = !inHeaderBand &&
+    centerX >= titleCfg.xMin &&
+    centerX <= titleCfg.xMax &&
+    centerY <= 0.45; // a touch more permissive than titleLogo.yMax for tall titles
+  const inCornerBand = !inHeaderBand &&
+    centerX >= cornerCfg.xThreshold &&
+    centerY >= cornerCfg.yThreshold;
 
-        if (dryRun) {
-          Logger.log(
-            "[DRY RUN] Would replace %s logo: objectId=%s page=%s",
-            logoType,
-            element.objectId,
-            pageName
-          );
-        } else {
-          requests.push({
-            replaceImage: {
-              imageObjectId: element.objectId,
-              imageReplaceMethod: "CENTER_INSIDE",
-              url: newLogoUrl,
-            },
-          });
-        }
-      });
+  // Insert at default size first so we can read the new logo's natural
+  // aspect ratio, then size & position correctly.
+  const newBlob  = getCodeAILogoBlob_();
+  const inserted = page.insertImage(newBlob);
+  const naturalW = inserted.getInherentWidth();
+  const naturalH = inserted.getInherentHeight();
+  const aspect = (naturalW && naturalH) ? naturalW / naturalH : (w / h || 1);
+
+  // Pick target width based on position, then derive height from aspect.
+  let targetW;
+  if (inHeaderBand) {
+    targetW = Math.max(w, HEADER_LOGO_MIN_WIDTH_PT);
+  } else if (inTitleBand) {
+    targetW = w * TITLE_LOGO_WIDTH_SCALE;
+  } else if (inCornerBand) {
+    targetW = Math.max(w, CORNER_LOGO_MIN_WIDTH_PT);
+  } else {
+    targetW = w * LOGO_SCALE;
+  }
+
+  // Cap width so the logo (with margin on each side) always fits the slide.
+  if (pageWidth) {
+    const maxAllowedW = pageWidth - 2 * LOGO_SLIDE_MARGIN;
+    if (maxAllowedW > 0 && targetW > maxAllowedW) targetW = maxAllowedW;
+  }
+
+  let finalW = targetW;
+  let finalH = finalW / aspect;
+
+  // If height now overflows the slide, scale both back down proportionally.
+  if (pageHeight) {
+    const maxAllowedH = pageHeight - 2 * LOGO_SLIDE_MARGIN;
+    if (maxAllowedH > 0 && finalH > maxAllowedH) {
+      finalH = maxAllowedH;
+      finalW = finalH * aspect;
+    }
+  }
+
+  // Center on the original's center.
+  let finalLeft = left + (w - finalW) / 2;
+  let finalTop  = top  + (h - finalH) / 2;
+
+  // Clamp to slide bounds with a margin so an edge-anchored original (e.g.
+  // a corner logo) doesn't push the enlarged replacement off the slide.
+  if (pageWidth) {
+    const minLeft = LOGO_SLIDE_MARGIN;
+    const maxLeft = pageWidth - finalW - LOGO_SLIDE_MARGIN;
+    finalLeft = (maxLeft < minLeft)
+      ? (pageWidth - finalW) / 2
+      : Math.max(minLeft, Math.min(maxLeft, finalLeft));
+  }
+  if (pageHeight) {
+    const minTop = LOGO_SLIDE_MARGIN;
+    const maxTop = pageHeight - finalH - LOGO_SLIDE_MARGIN;
+    finalTop = (maxTop < minTop)
+      ? (pageHeight - finalH) / 2
+      : Math.max(minTop, Math.min(maxTop, finalTop));
+  }
+
+  inserted.setLeft(finalLeft);
+  inserted.setTop(finalTop);
+  inserted.setWidth(finalW);
+  inserted.setHeight(finalH);
+  if (rotation && inserted.setRotation) {
+    try { inserted.setRotation(rotation); } catch (e) { /* not all elements support rotation */ }
+  }
+
+  // Shift adjacent text shapes out from under the new top-left header logo.
+  // Done before image.remove() so the inserted logo's id is known and skipped.
+  if (inHeaderBand) {
+    shiftOverlappingTextShapes_(
+      page,
+      inserted.getObjectId(),
+      { left: finalLeft, top: finalTop, right: finalLeft + finalW, bottom: finalTop + finalH },
+      pageWidth,
+      downstreamPages || []
+    );
+  }
+
+  image.remove();
+}
+
+/**
+ * After replacing a top-left header logo, shift any text shape on the same
+ * page (and any downstream pages — layouts of a master, slides of a layout)
+ * whose bounding box overlaps the new logo (or another already-shifted
+ * shape) to the right of that obstacle's right edge plus HEADER_TEXT_GAP_PT.
+ *
+ * Cascading: each successful shift becomes a new obstacle, so a small CSF
+ * tag on the master that gets pushed right will in turn push a Course-A
+ * box on the slide.
+ *
+ * Width is left unchanged so the text reflows; if shifting would push the
+ * shape past the right edge of the slide (minus LOGO_SLIDE_MARGIN), the
+ * shape is left in place and a warning is logged.
+ *
+ * Recurses into groups so nested header text shapes are also handled.
+ *
+ * @param {SlidesApp.Page} page
+ * @param {string} skipObjectId            Object id of the just-inserted logo.
+ * @param {{left:number,top:number,right:number,bottom:number}} logoRect
+ * @param {number} pageWidth               Slide width in points.
+ * @param {SlidesApp.Page[]} [downstreamPages]
+ */
+function shiftOverlappingTextShapes_(page, skipObjectId, logoRect, pageWidth, downstreamPages) {
+  // Collect every candidate shape (top-level + nested in groups) once, with
+  // its current geometry. We run multiple passes so a shape that gets shifted
+  // out of the logo's path becomes a new obstacle for shapes further to the
+  // right (e.g. the small CSF tag pushes the long course-name box over too).
+  var candidates = [];
+  var seenIds = {};
+
+  // A shape only counts as a header neighbor if its vertical center lies
+  // inside the logo bar's Y range. Without this, the relaxed rectsOverlap
+  // would later match large content-area boxes (e.g. a body text frame that
+  // spans most of the slide) against the small logo via the obstacle's
+  // center, and we'd try to shift them — they always overflow.
+  function inLogoYBand(top, height) {
+    var midY = top + height / 2;
+    return midY >= logoRect.top && midY <= logoRect.bottom;
+  }
+
+  function collectShape(shape) {
+    if (!shape) return;
+    var id = shape.getObjectId && shape.getObjectId();
+    if (id === skipObjectId) return;
+    if (id && seenIds[id]) return;
+    var sLeft, sTop, sW, sH;
+    try {
+      sLeft = shape.getLeft();
+      sTop  = shape.getTop();
+      sW    = shape.getWidth();
+      sH    = shape.getHeight();
+    } catch (e) {
+      return; // some placeholders refuse geometry reads on master/layout
+    }
+    if (!inLogoYBand(sTop, sH)) return;
+    if (id) seenIds[id] = true;
+    candidates.push({
+      shape: shape,
+      left: sLeft, top: sTop, width: sW, height: sH,
+      shifted: false,
     });
-  });
+  }
 
-  return requests;
+  function walkGroup(group) {
+    group.getChildren().forEach(function(child) {
+      var t = child.getPageElementType();
+      if (t === SlidesApp.PageElementType.SHAPE) {
+        collectShape(child.asShape());
+      } else if (t === SlidesApp.PageElementType.GROUP) {
+        walkGroup(child.asGroup());
+      }
+    });
+  }
+
+  function collectFromPage(p) {
+    p.getShapes().forEach(collectShape);
+    p.getGroups().forEach(walkGroup);
+  }
+
+  collectFromPage(page);
+  (downstreamPages || []).forEach(collectFromPage);
+
+  // Obstacle list — starts with the new logo, grows with every successful
+  // shift so subsequent passes can detect cascading overlaps.
+  var obstacles = [{
+    left: logoRect.left, top: logoRect.top,
+    right: logoRect.right, bottom: logoRect.bottom,
+  }];
+
+  function rectsOverlap(a, b) {
+    // Strict horizontal AABB. Vertical: relaxed — accept if either rect's
+    // vertical center lies inside the other's Y range. Header text shapes
+    // often have slightly different top/height than the logo bar (line-height
+    // padding, baseline offsets), and slide-level text boxes can sit at a
+    // different Y from the master logo, so strict AABB Y misses them.
+    if (!(a.left < b.right && a.right > b.left)) return false;
+    var aMid = (a.top + a.bottom) / 2;
+    var bMid = (b.top + b.bottom) / 2;
+    return (aMid >= b.top && aMid <= b.bottom) ||
+           (bMid >= a.top && bMid <= a.bottom);
+  }
+
+  // Iterate until no candidate gets shifted in a full pass. Cap at a few
+  // passes to avoid runaway loops on pathological inputs.
+  for (var pass = 0; pass < 8; pass++) {
+    var anyShifted = false;
+
+    for (var i = 0; i < candidates.length; i++) {
+      var c = candidates[i];
+      if (c.shifted) continue;
+
+      var cRect = {
+        left: c.left, top: c.top,
+        right: c.left + c.width, bottom: c.top + c.height,
+      };
+
+      // Find the rightmost obstacle this shape overlaps.
+      var hitRight = -Infinity;
+      var fullBleed = false;
+      for (var k = 0; k < obstacles.length; k++) {
+        var o = obstacles[k];
+        if (rectsOverlap(cRect, o)) {
+          if (o.right > hitRight) hitRight = o.right;
+          // Treat as full-bleed background ONLY if the shape extends past
+          // the obstacle on BOTH sides (i.e. envelops it). A shape that
+          // merely starts before the obstacle's left edge but ends inside
+          // it is normal adjacent text and should be shifted.
+          if (cRect.left <= o.left && cRect.right >= o.right) {
+            fullBleed = true;
+          }
+        }
+      }
+      if (hitRight === -Infinity) continue; // no overlap
+      if (fullBleed) continue;               // skip background bars
+
+      var newLeft = hitRight + HEADER_TEXT_GAP_PT;
+      if (newLeft <= c.left) continue; // already clear
+
+      if (pageWidth && newLeft + c.width > pageWidth - LOGO_SLIDE_MARGIN) {
+        Logger.log(
+          "Header shift skipped — shape %s would overflow slide (newLeft=%s width=%s pageWidth=%s)",
+          c.shape.getObjectId ? c.shape.getObjectId() : "?",
+          newLeft.toFixed(1), c.width.toFixed(1), pageWidth.toFixed(1)
+        );
+        c.shifted = true; // don't retry
+        continue;
+      }
+
+      try {
+        c.shape.setLeft(newLeft);
+      } catch (e) {
+        Logger.log(
+          "Header shift failed for shape %s: %s",
+          c.shape.getObjectId ? c.shape.getObjectId() : "?", e && e.message
+        );
+        c.shifted = true;
+        continue;
+      }
+
+      c.left = newLeft;
+      c.shifted = true;
+      anyShifted = true;
+      obstacles.push({
+        left: newLeft, top: c.top,
+        right: newLeft + c.width, bottom: c.top + c.height,
+      });
+    }
+
+    if (!anyShifted) break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -782,58 +1027,116 @@ function buildLogoReplaceRequests(pages, pageWidth, pageHeight, newLogoUrl, dryR
 // ---------------------------------------------------------------------------
 
 /**
- * Replaces logo images on master and layout slides using position heuristics.
- * Always run with dryRun=true first to audit matches before committing.
+ * Replaces logo images across masters, layouts, and slides using a Gemini-
+ * based image classifier. Every image is sent to Gemini (cached by SHA-256
+ * so identical images cost one call across the run). Images classified as a
+ * standalone code.org logo with confidence ≥ LOGO_CONFIDENCE.REPLACE are
+ * replaced; results in the [REVIEW, REPLACE) band are logged for manual
+ * review and left alone.
+ *
+ * Requires the GEMINI_API_KEY Script Property to be set; without it, every
+ * image is skipped and a warning is logged.
  *
  * @param {string}  presentationId
- * @param {boolean} [dryRun=false]
- * @param {Object}  [cachedPresentation]  Pre-fetched presentation object; fetched if omitted.
+ * @param {boolean} [dryRun=false]  When true, classifies & logs but makes no edits.
+ * @param {Object}  [_cachedPresentation]  Unused — accepted for backwards
+ *                                         compatibility with prior callers.
  */
-function replaceLogos(presentationId, dryRun, cachedPresentation) {
+function replaceLogos(presentationId, dryRun, _cachedPresentation) {
   const isDryRun = dryRun === true;
-  const presentation = cachedPresentation || getPresentation(presentationId);
-  const pageWidth  = presentation.pageSize.width.magnitude;
-  const pageHeight = presentation.pageSize.height.magnitude;
+  const deck = SlidesApp.openById(presentationId);
+  const pageWidth  = deck.getPageWidth();
+  const pageHeight = deck.getPageHeight();
 
-  const mastersAndLayouts = [].concat(
-    presentation.masters || [],
-    presentation.layouts || []
-  );
+  // Counts per disposition so the user can see the classifier outcome.
+  const counts = { replaced: 0, reviewed: 0, skipped: 0 };
+  const reviewLog = [];
 
-  // In dry-run mode, delegate to buildLogoReplaceRequests for logging only.
-  if (isDryRun) {
-    buildLogoReplaceRequests(mastersAndLayouts, pageWidth, pageHeight, null, true);
-    return;
+  function visit(page, pageLabel, downstreamPages) {
+    forEachSlidesImage_(page, function(image) {
+      let blob;
+      try {
+        blob = image.getBlob();
+      } catch (e) {
+        counts.skipped++;
+        return;
+      }
+
+      const verdict = classifyLogo_(blob);
+      const action  = logoAction_(verdict);
+
+      if (action === "skip") {
+        counts.skipped++;
+        return;
+      }
+      if (action === "review") {
+        counts.reviewed++;
+        reviewLog.push(
+          "  ? review (" + verdict.confidence.toFixed(2) + "): " +
+          pageLabel + " / " + image.getObjectId()
+        );
+        return;
+      }
+
+      // action === "replace"
+      if (isDryRun) {
+        counts.replaced++;
+        Logger.log(
+          "[DRY RUN] Would replace logo (%.2f): %s / %s",
+          verdict.confidence, pageLabel, image.getObjectId()
+        );
+        return;
+      }
+
+      try {
+        replaceSlidesLogoImage_(image, page, pageWidth, pageHeight, downstreamPages);
+        counts.replaced++;
+      } catch (err) {
+        counts.skipped++;
+        Logger.log(
+          "Logo replacement failed on %s / %s: %s",
+          pageLabel, image.getObjectId(), err && err.message
+        );
+      }
+    });
   }
 
-  // Identify objectIds of logo elements using the existing position heuristics.
-  // Pass a placeholder URL — we only need the objectIds, not the request objects.
-  const requests = buildLogoReplaceRequests(
-    mastersAndLayouts, pageWidth, pageHeight, "_placeholder_", false
-  );
-  if (requests.length === 0) return;
+  // Pre-compute "downstream" pages for each master/layout so the header-band
+  // shift can reach slide-level text boxes (e.g. CSF on master, Course-A on
+  // slide). Logo on master  → downstream = its layouts + slides using those
+  // layouts. Logo on layout → downstream = slides using that layout.
+  const allSlides = deck.getSlides();
 
-  const logoObjectIds = new Set(
-    requests.map(function(r) { return r.replaceImage.imageObjectId; })
-  );
+  deck.getMasters().forEach(function(m, i) {
+    const masterLayouts = m.getLayouts();
+    const masterLayoutIds = {};
+    masterLayouts.forEach(function(l) { masterLayoutIds[l.getObjectId()] = true; });
+    const slidesUnderMaster = allSlides.filter(function(s) {
+      var lyt = s.getLayout && s.getLayout();
+      return lyt && masterLayoutIds[lyt.getObjectId()];
+    });
 
-  // Fetch the logo blob via DriveApp — no public URL required.
-  // SlidesApp.Image.replace(blobSource, crop=false) scales to fit the existing
-  // element bounds while preserving aspect ratio (equivalent to CENTER_INSIDE).
-  const logoBlob = DriveApp.getFileById(LOGO_CONFIG.newLogoFileId).getBlob();
-  const deck = SlidesApp.openById(presentationId);
+    visit(m, "master[" + i + "]", masterLayouts.concat(slidesUnderMaster));
 
-  deck.getMasters().forEach(function(master) {
-    master.getImages().forEach(function(img) {
-      if (logoObjectIds.has(img.getObjectId())) img.replace(logoBlob, false);
+    masterLayouts.forEach(function(l, j) {
+      const layoutId = l.getObjectId();
+      const slidesForLayout = allSlides.filter(function(s) {
+        var lyt = s.getLayout && s.getLayout();
+        return lyt && lyt.getObjectId() === layoutId;
+      });
+      visit(l, "master[" + i + "].layout[" + j + "]", slidesForLayout);
     });
   });
+  allSlides.forEach(function(s, i) { visit(s, "slide[" + i + "]", []); });
 
-  deck.getLayouts().forEach(function(layout) {
-    layout.getImages().forEach(function(img) {
-      if (logoObjectIds.has(img.getObjectId())) img.replace(logoBlob, false);
-    });
-  });
+  if (reviewLog.length) {
+    Logger.log("Logo classifier — needs review:\n%s", reviewLog.join("\n"));
+  }
+  Logger.log(
+    "Logo replacement %s — replaced:%d review:%d skipped:%d",
+    isDryRun ? "dry run" : "complete",
+    counts.replaced, counts.reviewed, counts.skipped
+  );
 }
 
 // ---------------------------------------------------------------------------

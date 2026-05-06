@@ -104,30 +104,82 @@ const COLOR_DISTANCE_THRESHOLD = 15;
 
 /**
  * Logo detection config.
- * newLogoFileId: Google Drive file ID of the replacement logo.
- *   The file must be shared as "Anyone with the link can view".
+ * newLogoFileId: Google Drive file ID of the replacement logo. Used as a
+ *   fallback only — the preferred source is the CODEAI_LOGO_DRIVE_ID Script
+ *   Property (read via getCodeAILogoFileId_). The file must be shared as
+ *   "Anyone with the link can view".
  * cornerLogo: bottom-right recurring logo (centerX > xThreshold, centerY > yThreshold)
  * titleLogo:  upper-center title slide logo (xMin < centerX < xMax, centerY < yMax)
  * All threshold values are percentages of the slide dimensions (0.0–1.0).
  */
 const LOGO_CONFIG = {
   newLogoFileId: "1k9CbaVCdgAb5oAfbO5myAG2xH049jGlu",
+  // cornerLogo / titleLogo position thresholds are no longer used for slides
+  // (Gemini-based classifier handles every image), but kept for reference and
+  // potential reuse by the docs path.
   cornerLogo: { xThreshold: 0.75, yThreshold: 0.75 },
   titleLogo:  { xMin: 0.25, xMax: 0.75, yMax: 0.35 },
+  // Top-left header band — legacy decks render a small wordmark in the
+  // top-left corner of every layout, with the course name immediately to
+  // its right. After replacement, the new (roughly square) logo overlaps
+  // that adjacent text unless we shift the text right. Used by
+  // replaceSlidesLogoImage_ to detect this case.
+  headerLogo: { xMax: 0.15, yMax: 0.15 },
   docsLogo: {
     oldSourceUri: null, // Set after running logDocImages — e.g. "https://lh3.googleusercontent.com/..."
-    // newLogoUrl: direct public image URL for insertInlineImage.
-    // The Docs API cannot follow Drive redirects, so drive.google.com URLs fail.
-    // Set this to a direct public URL: a GitHub raw URL, Google Cloud Storage,
-    // or any CDN that serves the image bytes without redirects.
-    // Example: "https://raw.githubusercontent.com/org/repo/main/logo.png"
-    // Leave null to fall back to the Drive uc?id= URL (works only if the file
-    // is shared "Anyone with the link can view" and Drive serves it redirect-free).
-    newLogoUrl:   "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
-    minWidthPt:   20,   // Size bounds fallback — adjust based on logDocImages output
-    maxWidthPt:   200,
+    // Additional known sourceUris of legacy logo images. Any inline image
+    // whose embeddedObject.imageProperties.sourceUri is in this list (or
+    // matches oldSourceUri) is treated as a logo and replaced. Cheaper
+    // than the Gemini classifier and useful for fast paths on docs whose
+    // logo URI is known.
+    oldSourceUris: [],
+    // When true and no sourceUri match is found, fetch the image bytes
+    // (via embeddedObject.imageProperties.contentUri + OAuth) and run the
+    // Gemini logo classifier (logo-classifier.js → classifyLogo_). Only
+    // images classified as "replace" become matches. This avoids
+    // false-positive replacements of unrelated images (avatars, diagrams,
+    // screenshots) that happen to share size bounds with the legacy logo.
+    useGeminiClassifier: true,
+    // newLogoUrl: optional override — direct public image URL for insertInlineImage.
+    // The Docs API cannot follow Drive redirects, so drive.google.com URLs
+    // sometimes fail; if you have a CDN/raw URL, set it here to override.
+    // Leave null (default) to fall back to the Drive uc?id= URL built from
+    // the CODEAI_LOGO_DRIVE_ID Script Property (or LOGO_CONFIG.newLogoFileId).
+    newLogoUrl:   null,
+    minWidthPt:   20,   // Size bounds — used ONLY by logDocLogoCandidates as a
+    maxWidthPt:   200,  // discovery filter, not by the live matching path.
     minHeightPt:  10,
     maxHeightPt:  100,
+    // Uniform scale factor applied to the replacement logo's size. The new
+    // CODEAI logo is much shorter than the legacy logo, so reusing the old
+    // box dimensions makes it look tiny. Scaling the inserted image up (4x
+    // by default ≈ 400% wider) restores visual prominence while preserving
+    // the new logo's natural aspect ratio inside the larger box.
+    scale:        4.0,
+    // Resize columns of any table that contains a matched logo, in inches.
+    // Index 0 → first column width, index 1 → second column width, etc.
+    // Columns beyond the array's length are left unchanged. The legacy
+    // template uses a 1.1" / 6.2" split that crowds the logo against the
+    // right edge; flipping to 6.2" / 2.3" gives the scaled logo room.
+    tableColumnWidthsIn: [6.2, 2.3],
+    // When true, replaceDocLogos runs a structural pass that deletes a
+    // legacy empty leading spacer column from 3-column logo tables and
+    // applies tableColumnWidthsIn. Set to false to disable structural
+    // changes (only the logo image itself is replaced) — useful for
+    // diagnosing layout issues or running on docs whose tables shouldn't
+    // be restructured.
+    restructureLegacyTable: true,
+    // Hard maximum width for the inserted (replacement) logo, in inches.
+    // The image is also clamped to its containing cell / page content
+    // width; this cap applies on top so the logo never exceeds the brand
+    // size regardless of cell width or scale factor. Set to null to
+    // disable the global cap.
+    maxWidthInsertedIn: 2.0,
+    // Left indent (inches) applied to every paragraph in column 0 of any
+    // table touched by the structural pass. Keeps title text from
+    // touching the cell's left edge after the spacer column is removed.
+    // Set to null or 0 to disable.
+    firstColumnTextIndentIn: 0.5,
   },
 };
 
@@ -235,4 +287,127 @@ function getPresentation(presentationId, maxAttempts) {
       Utilities.sleep(Math.pow(2, i) * 1000);
     }
   }
+}
+
+// =============================================================================
+// Gemini-based logo classifier — config & shared helpers
+// =============================================================================
+
+/**
+ * Script Property keys read at runtime. Set via:
+ *   Apps Script editor > Project Settings > Script properties.
+ *
+ * GEMINI_API_KEY is required for slides logo replacement; without it,
+ * the classifier short-circuits to "skip" and no logos are replaced.
+ */
+const PROP_KEYS = {
+  GEMINI_API_KEY: "GEMINI_API_KEY",
+  CODEAI_LOGO_DRIVE_ID: "CODEAI_LOGO_DRIVE_ID",
+};
+
+/**
+ * Confidence thresholds for the Gemini logo classifier:
+ *   confidence >= REPLACE          → replace the image with the new logo
+ *   REVIEW <= confidence < REPLACE → leave alone, surface as needs-review
+ *   confidence < REVIEW            → ignore
+ */
+const LOGO_CONFIDENCE = {
+  REPLACE: 0.85,
+  REVIEW:  0.5,
+};
+
+/**
+ * Default uniform scale applied to a replaced logo's WIDTH (height follows
+ * the new logo's natural aspect ratio). Used as a fallback when the original
+ * doesn't match the title-center or bottom-right corner position bands.
+ */
+const LOGO_SCALE = 2;
+
+/**
+ * Width-scale applied to logos detected in the title-slide top-center band
+ * (centerX in [0.25, 0.75], centerY < 0.45). The new logo is roughly square
+ * while the legacy wordmark was wide-and-short, so scaling by the original's
+ * (small) height made the replacement look tiny. Scaling the WIDTH directly
+ * — and letting the height follow the new logo's natural aspect — restores
+ * visual prominence on title slides.
+ */
+const TITLE_LOGO_WIDTH_SCALE = 3;
+
+/**
+ * Minimum WIDTH (in points; 72pt = 1 inch) for logos detected in the
+ * bottom-right corner band (centerX > 0.75, centerY > 0.75). If the original
+ * is wider than this, the original width is preserved.
+ */
+const CORNER_LOGO_MIN_WIDTH_PT = 72;
+
+/**
+ * Minimum WIDTH (in points; 36pt = 0.5 inch) for logos detected in the
+ * top-left header band (LOGO_CONFIG.headerLogo). If the original is wider
+ * than this, the original width is preserved — header logos are usually
+ * sized correctly already; the issue is overlap with adjacent text, not
+ * size.
+ */
+const HEADER_LOGO_MIN_WIDTH_PT = 36;
+
+/**
+ * Horizontal gap (in points) inserted between the new top-left header logo's
+ * right edge and any text shape that gets shifted out of its way.
+ */
+const HEADER_TEXT_GAP_PT = 8;
+
+/**
+ * Minimum padding (in points; Slides' native unit) between the new logo and
+ * any slide edge. If centering would put the new logo closer to an edge than
+ * this, it is shifted inward.
+ */
+const LOGO_SLIDE_MARGIN = 10;
+
+/** Gemini model used for the vision-based logo classifier. */
+const GEMINI_MODEL = "gemini-2.5-flash";
+
+/**
+ * Reads a Script Property; returns null when the key is unset so callers can
+ * decide how to fail (the classifier short-circuits to "skip").
+ */
+function getScriptProp_(key) {
+  try {
+    return PropertiesService.getScriptProperties().getProperty(key);
+  } catch (e) {
+    return null;
+  }
+}
+
+function getGeminiKey_() {
+  return getScriptProp_(PROP_KEYS.GEMINI_API_KEY);
+}
+
+/**
+ * Returns the Drive file ID of the replacement CodeAI logo.
+ * Prefers the CODEAI_LOGO_DRIVE_ID Script Property; falls back to the
+ * hard-coded LOGO_CONFIG.newLogoFileId so existing deployments keep working.
+ */
+function getCodeAILogoFileId_() {
+  return getScriptProp_(PROP_KEYS.CODEAI_LOGO_DRIVE_ID) || LOGO_CONFIG.newLogoFileId;
+}
+
+/** Cached blob for the new CodeAI logo so DriveApp is hit at most once per run. */
+var _codeAiLogoBlobCache = null;
+function getCodeAILogoBlob_() {
+  if (_codeAiLogoBlobCache) return _codeAiLogoBlobCache;
+  _codeAiLogoBlobCache = DriveApp.getFileById(getCodeAILogoFileId_()).getBlob();
+  return _codeAiLogoBlobCache;
+}
+
+/** Lowercase hex SHA-256 of a blob's bytes (used as the classifier cache key). */
+function sha256Hex_(blob) {
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    blob.getBytes()
+  );
+  let s = "";
+  for (let i = 0; i < bytes.length; i++) {
+    const b = bytes[i] < 0 ? bytes[i] + 256 : bytes[i];
+    s += (b < 16 ? "0" : "") + b.toString(16);
+  }
+  return s;
 }

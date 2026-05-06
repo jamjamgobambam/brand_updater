@@ -970,86 +970,53 @@ function logDocTableStyles(docId) {
  */
 function buildDocLogoRequests(doc, newLogoUrl, dryRun) {
   const logoConfig    = LOGO_CONFIG.docsLogo;
-  const inlineObjects = doc.inlineObjects || {};
-
-  // Step 1 — build reverse index: position of every inlineObjectElement
-  const reverseIndex = [];
-
-  function collectImageElement(el, segmentId) {
-    if (!el.paragraph) return;
-    (el.paragraph.elements || []).forEach(function(pe) {
-      if (pe.inlineObjectElement) {
-        reverseIndex.push({
-          objectId:   pe.inlineObjectElement.inlineObjectId,
-          startIndex: pe.startIndex !== undefined ? pe.startIndex : 0,
-          segmentId:  segmentId,
-        });
-      }
-    });
-  }
-
-  walkDocContent(doc.body ? doc.body.content : null, "", collectImageElement);
-  Object.keys(doc.headers || {}).forEach(function(id) {
-    walkDocContent(doc.headers[id].content, id, collectImageElement);
-  });
-  Object.keys(doc.footers || {}).forEach(function(id) {
-    walkDocContent(doc.footers[id].content, id, collectImageElement);
-  });
-
-  // Steps 2–4 — match inline objects and collect logo positions
-  const matches = [];
-
-  reverseIndex.forEach(function(entry) {
-    const inlineObj = inlineObjects[entry.objectId];
-    if (!inlineObj) return;
-
-    const embedded =
-      inlineObj.inlineObjectProperties &&
-      inlineObj.inlineObjectProperties.embeddedObject;
-    if (!embedded) return;
-
-    const sourceUri = embedded.imageProperties && embedded.imageProperties.sourceUri;
-    const widthPt   = embedded.size && embedded.size.width  && embedded.size.width.magnitude;
-    const heightPt  = embedded.size && embedded.size.height && embedded.size.height.magnitude;
-
-    let isMatch = false;
-    if (logoConfig.oldSourceUri !== null && logoConfig.oldSourceUri !== undefined) {
-      isMatch = (sourceUri === logoConfig.oldSourceUri);
-    } else {
-      isMatch =
-        widthPt  >= logoConfig.minWidthPt  &&
-        widthPt  <= logoConfig.maxWidthPt  &&
-        heightPt >= logoConfig.minHeightPt &&
-        heightPt <= logoConfig.maxHeightPt;
-    }
-
-    if (!isMatch) return;
-
-    if (dryRun) {
-      Logger.log(
-        "DRY RUN — logo match: objectId=%s segmentId=%s startIndex=%s sourceUri=%s width=%sPT height=%sPT",
-        entry.objectId, entry.segmentId, entry.startIndex,
-        sourceUri || "(null)", widthPt, heightPt
-      );
-      return;
-    }
-
-    matches.push({
-      startIndex: entry.startIndex,
-      segmentId:  entry.segmentId,
-      widthPt:    widthPt,
-      heightPt:   heightPt,
-    });
-  });
+  const matches       = findLogoMatches(doc, logoConfig, dryRun);
 
   if (dryRun) return [];
+  if (matches.length === 0) return [];
 
-  // Step 5 — sort in reverse order to prevent index shifts from invalidating later operations
+  // Sort in reverse order so earlier inserts/deletes don't shift the
+  // positions of later ones.
   matches.sort(function(a, b) { return b.startIndex - a.startIndex; });
 
-  // Build flat request array: delete then insert for each match
+  // Uniform scale factor for the replacement image (default 4x). Preserves
+  // the new logo's aspect ratio inside the larger box.
+  const scale = (logoConfig.scale && logoConfig.scale > 0) ? logoConfig.scale : 1;
+
+  // Page-level fallback cap when the logo is NOT inside a table.
+  const docStyle = doc.documentStyle || {};
+  const pageW    = docStyle.pageSize    && docStyle.pageSize.width    && docStyle.pageSize.width.magnitude;
+  const marginL  = docStyle.marginLeft  && docStyle.marginLeft.magnitude;
+  const marginR  = docStyle.marginRight && docStyle.marginRight.magnitude;
+  const pageMaxWidthPt = (pageW && marginL !== undefined && marginR !== undefined)
+    ? (pageW - marginL - marginR)
+    : null;
+
+  // Global hard cap (brand max width). Applied alongside the cell/page
+  // cap via Math.min, so a narrow cell still clamps tighter; this only
+  // prevents the logo from getting too wide in roomy cells.
+  const globalMaxPt = (typeof logoConfig.maxWidthInsertedIn === "number" && logoConfig.maxWidthInsertedIn > 0)
+    ? logoConfig.maxWidthInsertedIn * 72
+    : null;
+
   const requests = [];
   matches.forEach(function(match) {
+    var newWidth  = match.widthPt  * scale;
+    var newHeight = match.heightPt * scale;
+    // Combine all applicable caps; cellWidthPt is preferred for in-table
+    // logos, pageMaxWidthPt is the fallback. globalMaxPt always applies.
+    var caps = [];
+    if (typeof match.cellWidthPt === "number") caps.push(match.cellWidthPt);
+    else if (pageMaxWidthPt !== null)          caps.push(pageMaxWidthPt);
+    if (globalMaxPt !== null)                  caps.push(globalMaxPt);
+    var maxWidthPt = caps.length ? Math.min.apply(null, caps) : null;
+    if (maxWidthPt !== null && newWidth > maxWidthPt) {
+      // Clamp width to the tightest cap; preserve aspect ratio.
+      var ratio = maxWidthPt / newWidth;
+      newWidth  = maxWidthPt;
+      newHeight = newHeight * ratio;
+    }
+
     requests.push({
       deleteContentRange: {
         range: {
@@ -1067,13 +1034,602 @@ function buildDocLogoRequests(doc, newLogoUrl, dryRun) {
         },
         uri: newLogoUrl,
         objectSize: {
-          width:  { magnitude: match.widthPt,  unit: "PT" },
-          height: { magnitude: match.heightPt, unit: "PT" },
+          width:  { magnitude: newWidth,  unit: "PT" },
+          height: { magnitude: newHeight, unit: "PT" },
         },
       },
     });
   });
 
+  return requests;
+}
+
+// ---------------------------------------------------------------------------
+// findLogoMatches (internal)
+// ---------------------------------------------------------------------------
+
+/**
+ * Walks a document and returns logo-image matches with their containing
+ * table context (startIndex, segmentId, cellWidthPt, tableStartIndex,
+ * colIndex, numColumns, firstColEmpty). Used by both buildDocLogoRequests
+ * and buildDocTableStructureRequests.
+ *
+ * @param {Object}  doc         Full document from Docs.Documents.get().
+ * @param {Object}  logoConfig  LOGO_CONFIG.docsLogo
+ * @param {boolean} dryRun      If true, log each match and return [].
+ * @returns {Object[]}          Array of match objects (empty when dryRun).
+ */
+function findLogoMatches(doc, logoConfig, dryRun) {
+  const inlineObjects = doc.inlineObjects || {};
+  const reverseIndex  = [];
+
+  // Pre-compute, per table (keyed by tableStartIndex within a segmentId),
+  // whether the first column is "empty" (no inline images and no
+  // non-whitespace text in any of its row-0 cells). Detected during walk.
+  const tableMeta = {};
+
+  function isCellEmpty(cell) {
+    var empty = true;
+    (cell.content || []).forEach(function(el) {
+      if (!empty) return;
+      if (el.paragraph) {
+        (el.paragraph.elements || []).forEach(function(pe) {
+          if (!empty) return;
+          if (pe.inlineObjectElement) { empty = false; return; }
+          if (pe.textRun && pe.textRun.content && /\S/.test(pe.textRun.content)) {
+            empty = false;
+          }
+        });
+      }
+      if (el.table) {
+        // A nested table counts as content.
+        empty = false;
+      }
+    });
+    return empty;
+  }
+
+  function collectFromContent(contentArray, segmentId, tableCtx) {
+    if (!contentArray) return;
+    contentArray.forEach(function(el) {
+      if (el.paragraph) {
+        (el.paragraph.elements || []).forEach(function(pe) {
+          if (pe.inlineObjectElement) {
+            reverseIndex.push({
+              objectId:        pe.inlineObjectElement.inlineObjectId,
+              startIndex:      pe.startIndex !== undefined ? pe.startIndex : 0,
+              segmentId:       segmentId,
+              cellWidthPt:     tableCtx ? tableCtx.cellWidthPt : null,
+              tableStartIndex: tableCtx ? tableCtx.tableStartIndex : null,
+              rowIndex:        tableCtx ? tableCtx.rowIndex : null,
+              colIndex:        tableCtx ? tableCtx.colIndex : null,
+              numColumns:      tableCtx ? tableCtx.numColumns : null,
+            });
+          }
+        });
+      }
+      if (el.table) {
+        const tableStartIndex = el.startIndex !== undefined ? el.startIndex : 0;
+        const colProps =
+          (el.table.tableStyle && el.table.tableStyle.tableColumnProperties) || [];
+        const numColumns = colProps.length || (el.table.columns || 0);
+
+        // Determine if the first column is empty across all rows.
+        var firstColEmpty = true;
+        (el.table.tableRows || []).forEach(function(row) {
+          if (!firstColEmpty) return;
+          var cell0 = (row.tableCells || [])[0];
+          if (!cell0 || !isCellEmpty(cell0)) firstColEmpty = false;
+        });
+
+        const metaKey = segmentId + "|" + tableStartIndex;
+        tableMeta[metaKey] = {
+          numColumns:    numColumns,
+          firstColEmpty: firstColEmpty,
+        };
+
+        (el.table.tableRows || []).forEach(function(row, rowIndex) {
+          (row.tableCells || []).forEach(function(cell, colIndex) {
+            const colW =
+              colProps[colIndex] &&
+              colProps[colIndex].width &&
+              colProps[colIndex].width.magnitude;
+            const cs   = cell.tableCellStyle || {};
+            const padL = (cs.paddingLeft  && cs.paddingLeft.magnitude)  || 0;
+            const padR = (cs.paddingRight && cs.paddingRight.magnitude) || 0;
+            const innerW = (typeof colW === "number") ? Math.max(0, colW - padL - padR) : null;
+            collectFromContent(cell.content, segmentId, {
+              cellWidthPt:     innerW,
+              tableStartIndex: tableStartIndex,
+              rowIndex:        rowIndex,
+              colIndex:        colIndex,
+              numColumns:      numColumns,
+            });
+          });
+        });
+      }
+    });
+  }
+
+  collectFromContent(doc.body ? doc.body.content : null, "", null);
+  Object.keys(doc.headers || {}).forEach(function(id) {
+    collectFromContent(doc.headers[id].content, id, null);
+  });
+  Object.keys(doc.footers || {}).forEach(function(id) {
+    collectFromContent(doc.footers[id].content, id, null);
+  });
+
+  const matches = [];
+  // Build the set of known legacy logo sourceUris (legacy oldSourceUri +
+  // current oldSourceUris[]). Membership in this set is the cheap fast path.
+  const knownUris = {};
+  if (logoConfig.oldSourceUri) knownUris[logoConfig.oldSourceUri] = true;
+  (logoConfig.oldSourceUris || []).forEach(function(u) { if (u) knownUris[u] = true; });
+
+  // Per-run cache of Gemini verdicts keyed by objectId so the same image
+  // appearing multiple times only triggers one classifier call.
+  const verdictByObjectId = {};
+
+  reverseIndex.forEach(function(entry) {
+    const inlineObj = inlineObjects[entry.objectId];
+    if (!inlineObj) return;
+
+    const embedded =
+      inlineObj.inlineObjectProperties &&
+      inlineObj.inlineObjectProperties.embeddedObject;
+    if (!embedded) return;
+
+    const imgProps  = embedded.imageProperties || {};
+    const sourceUri = imgProps.sourceUri;
+    const contentUri = imgProps.contentUri;
+    const widthPt   = embedded.size && embedded.size.width  && embedded.size.width.magnitude;
+    const heightPt  = embedded.size && embedded.size.height && embedded.size.height.magnitude;
+
+    // Tier 1 — exact sourceUri match (deterministic, no API cost).
+    let isMatch = !!(sourceUri && knownUris[sourceUri]);
+    let matchReason = isMatch ? "sourceUri" : null;
+
+    // Tier 2 — Gemini classifier on the image bytes. Only images
+    // unambiguously classified as the brand logo become matches; this
+    // prevents the size-based false positives we used to get on avatars
+    // and unrelated content images.
+    if (!isMatch && logoConfig.useGeminiClassifier !== false && contentUri) {
+      var verdict = verdictByObjectId[entry.objectId];
+      if (verdict === undefined) {
+        try {
+          const blob = fetchInlineObjectBlob_(contentUri);
+          if (blob) {
+            verdict = classifyLogo_(blob);
+          } else {
+            verdict = { is_logo: false, confidence: 0 };
+          }
+        } catch (e) {
+          Logger.log("findLogoMatches: classifier failed for objectId=%s: %s",
+                     entry.objectId, e && e.message);
+          verdict = { is_logo: false, confidence: 0 };
+        }
+        verdictByObjectId[entry.objectId] = verdict;
+      }
+      if (typeof logoAction_ === "function" && logoAction_(verdict) === "replace") {
+        isMatch = true;
+        matchReason = "gemini(" + verdict.confidence.toFixed(2) + ")";
+      }
+    }
+
+    if (!isMatch) return;
+
+    if (dryRun) {
+      Logger.log(
+        "DRY RUN — logo match: objectId=%s segmentId=%s startIndex=%s reason=%s sourceUri=%s width=%sPT height=%sPT",
+        entry.objectId, entry.segmentId, entry.startIndex,
+        matchReason, sourceUri || "(null)", widthPt, heightPt
+      );
+      return;
+    }
+
+    const meta = (entry.tableStartIndex !== null && entry.tableStartIndex !== undefined)
+      ? tableMeta[entry.segmentId + "|" + entry.tableStartIndex]
+      : null;
+
+    matches.push({
+      startIndex:      entry.startIndex,
+      segmentId:       entry.segmentId,
+      widthPt:         widthPt,
+      heightPt:        heightPt,
+      cellWidthPt:     entry.cellWidthPt,
+      tableStartIndex: entry.tableStartIndex,
+      rowIndex:        entry.rowIndex,
+      colIndex:        entry.colIndex,
+      numColumns:      entry.numColumns,
+      firstColEmpty:   meta ? meta.firstColEmpty : false,
+    });
+  });
+
+  return matches;
+}
+
+// ---------------------------------------------------------------------------
+// fetchInlineObjectBlob_ (internal)
+// ---------------------------------------------------------------------------
+
+/**
+ * Fetch the bytes of an inline image's contentUri using the Apps Script
+ * OAuth token. The contentUri is short-lived (~30 minutes) and requires
+ * authentication; UrlFetchApp with a Bearer token is the supported way to
+ * retrieve the image bytes from the Docs API.
+ *
+ * @param {string} contentUri
+ * @returns {GoogleAppsScript.Base.Blob|null}
+ */
+function fetchInlineObjectBlob_(contentUri) {
+  if (!contentUri) return null;
+  const token = ScriptApp.getOAuthToken();
+  const resp = UrlFetchApp.fetch(contentUri, {
+    method:             "get",
+    headers:            { Authorization: "Bearer " + token },
+    muteHttpExceptions: true,
+  });
+  const code = resp.getResponseCode();
+  if (code < 200 || code >= 300) {
+    Logger.log("fetchInlineObjectBlob_: HTTP %s for %s", code, contentUri);
+    return null;
+  }
+  return resp.getBlob();
+}
+
+// ---------------------------------------------------------------------------
+// logDocLogoCandidates (diagnostic, read-only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Lists every inline image in a document with its sourceUri, contentUri,
+ * size, and (when useGemini=true) Gemini classifier verdict. Read-only —
+ * use to discover which sourceUris belong to legitimate logos so you can
+ * populate LOGO_CONFIG.docsLogo.oldSourceUris.
+ *
+ * @param {string}  docId
+ * @param {boolean} [useGemini=false]  If true, run classifyLogo_ on each image.
+ */
+function logDocLogoCandidates(docId, useGemini) {
+  const doc = Docs.Documents.get(docId);
+  const inlineObjects = doc.inlineObjects || {};
+  const ids = Object.keys(inlineObjects);
+  Logger.log("logDocLogoCandidates: %d inline images in %s", ids.length, docId);
+
+  ids.forEach(function(objectId) {
+    const obj = inlineObjects[objectId];
+    const embedded = obj.inlineObjectProperties && obj.inlineObjectProperties.embeddedObject;
+    if (!embedded) return;
+    const ip = embedded.imageProperties || {};
+    const w  = embedded.size && embedded.size.width  && embedded.size.width.magnitude;
+    const h  = embedded.size && embedded.size.height && embedded.size.height.magnitude;
+
+    var verdictStr = "(skipped)";
+    if (useGemini && ip.contentUri) {
+      try {
+        const blob = fetchInlineObjectBlob_(ip.contentUri);
+        if (blob) {
+          const v = classifyLogo_(blob);
+          verdictStr = "is_logo=" + v.is_logo + " conf=" + (v.confidence || 0).toFixed(2) +
+                       " action=" + (typeof logoAction_ === "function" ? logoAction_(v) : "?");
+        } else {
+          verdictStr = "(no blob)";
+        }
+      } catch (e) {
+        verdictStr = "(error: " + (e && e.message) + ")";
+      }
+    }
+
+    Logger.log(
+      "  objectId=%s sizePT=%sx%s sourceUri=%s gemini=%s",
+      objectId,
+      w != null ? w.toFixed(1) : "?",
+      h != null ? h.toFixed(1) : "?",
+      ip.sourceUri || "(null)",
+      verdictStr
+    );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// logDocLogoTables (diagnostic, read-only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Logs structural details for every table in the document that contains a
+ * matched logo. Read-only — makes no API changes. Intended for diagnosing
+ * layout issues before running the structural pass.
+ *
+ * For each affected table, logs:
+ *   - segmentId, tableStartIndex, numColumns
+ *   - page content width vs. sum of column widths
+ *   - per-column: widthType, width (PT and inches)
+ *   - per cell (row × col): empty?, has-image?, first ~50 chars of text
+ *   - the matched logo's column index
+ *
+ * @param {string} docId
+ */
+function logDocLogoTables(docId) {
+  const doc        = Docs.Documents.get(docId);
+  const logoConfig = LOGO_CONFIG.docsLogo;
+  const matches    = findLogoMatches(doc, logoConfig, false);
+
+  if (matches.length === 0) {
+    Logger.log("logDocLogoTables: no logo matches in %s", docId);
+    return;
+  }  // Page content width.
+  const ds = doc.documentStyle || {};
+  const pageW   = ds.pageSize    && ds.pageSize.width    && ds.pageSize.width.magnitude;
+  const marginL = ds.marginLeft  && ds.marginLeft.magnitude;
+  const marginR = ds.marginRight && ds.marginRight.magnitude;
+  const pageContentPt = (pageW != null && marginL != null && marginR != null)
+    ? (pageW - marginL - marginR) : null;
+
+  // Group matches by (segmentId, tableStartIndex) so we don't double-log.
+  const seen = {};
+  matches.forEach(function(m) {
+    if (m.tableStartIndex == null) return;
+    const key = m.segmentId + "|" + m.tableStartIndex;
+    if (seen[key]) return;
+    seen[key] = true;
+
+    // Find the actual table object so we can iterate rows/cells.
+    const tableObj = findTableByStartIndex_(doc, m.segmentId, m.tableStartIndex);
+    if (!tableObj) {
+      Logger.log("logDocLogoTables: could not locate table at segmentId=%s startIndex=%s",
+                 m.segmentId || "(body)", m.tableStartIndex);
+      return;
+    }
+
+    const colProps = (tableObj.tableStyle && tableObj.tableStyle.tableColumnProperties) || [];
+    var totalPt = 0;
+    colProps.forEach(function(cp) {
+      if (cp && cp.width && typeof cp.width.magnitude === "number") totalPt += cp.width.magnitude;
+    });
+
+    Logger.log("=== Table @ segmentId=%s tableStartIndex=%s ===",
+               m.segmentId || "(body)", m.tableStartIndex);
+    Logger.log("  numColumns=%s firstColEmpty=%s logoColIndex=%s",
+               m.numColumns, m.firstColEmpty, m.colIndex);
+    Logger.log("  pageContentPt=%s sumColPt=%s",
+               pageContentPt, totalPt);
+    colProps.forEach(function(cp, i) {
+      const wt = cp && cp.widthType;
+      const wp = cp && cp.width && cp.width.magnitude;
+      Logger.log("  col[%d]: widthType=%s width=%sPT (%sin)",
+                 i, wt || "(none)", wp != null ? wp.toFixed(2) : "(none)",
+                 wp != null ? (wp / 72).toFixed(3) : "(none)");
+    });
+
+    (tableObj.tableRows || []).forEach(function(row, rIdx) {
+      (row.tableCells || []).forEach(function(cell, cIdx) {
+        var hasImage = false;
+        var textPreview = "";
+        (cell.content || []).forEach(function(el) {
+          if (el.paragraph) {
+            (el.paragraph.elements || []).forEach(function(pe) {
+              if (pe.inlineObjectElement) hasImage = true;
+              if (pe.textRun && pe.textRun.content) {
+                textPreview += pe.textRun.content;
+              }
+            });
+          }
+        });
+        const trimmed = textPreview.replace(/\s+/g, " ").trim();
+        const empty = !hasImage && !/\S/.test(textPreview);
+        Logger.log("  cell[r=%d,c=%d]: empty=%s hasImage=%s text=%s",
+                   rIdx, cIdx, empty, hasImage,
+                   JSON.stringify(trimmed.length > 50 ? trimmed.slice(0, 50) + "…" : trimmed));
+      });
+    });
+  });
+}
+
+/**
+ * Locate a table by its startIndex within a given segment.
+ * @param {Object} doc
+ * @param {string} segmentId  "" for body, header/footer ID otherwise.
+ * @param {number} tableStartIndex
+ * @returns {Object|null}     The table structural element's `.table`, or null.
+ */
+function findTableByStartIndex_(doc, segmentId, tableStartIndex) {
+  var found = null;
+  function scan(contentArray) {
+    if (!contentArray || found) return;
+    contentArray.forEach(function(el) {
+      if (found) return;
+      const startIndex = el.startIndex !== undefined ? el.startIndex : 0;
+      if (el.table && startIndex === tableStartIndex) {
+        found = el.table;
+        return;
+      }
+      if (el.table) {
+        (el.table.tableRows || []).forEach(function(row) {
+          (row.tableCells || []).forEach(function(cell) {
+            scan(cell.content);
+          });
+        });
+      }
+    });
+  }
+
+  if (segmentId === "" || segmentId == null) {
+    scan(doc.body && doc.body.content);
+  } else if (doc.headers && doc.headers[segmentId]) {
+    scan(doc.headers[segmentId].content);
+  } else if (doc.footers && doc.footers[segmentId]) {
+    scan(doc.footers[segmentId].content);
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------------------
+// buildDocTableStructureRequests
+// ---------------------------------------------------------------------------
+
+/**
+ * For every table that contains a matched logo, returns the structural
+ * requests needed to bring the table into the new layout:
+ *
+ *   - If the table has 3 columns and the first column is empty across all
+ *     rows (legacy spacer column), emit a deleteTableColumn(0) request.
+ *   - Then emit one updateTableColumnProperties request per configured
+ *     width in LOGO_CONFIG.docsLogo.tableColumnWidthsIn, applied to the
+ *     POST-deletion column indices.
+ *
+ * These requests must be sent in a separate batchUpdate before logo edits,
+ * because deleteTableColumn shifts the document's text indexes and would
+ * invalidate the cached logo startIndex values.
+ *
+ * @param {Object} doc
+ * @returns {Object[]}  Array of request objects (may be empty).
+ */
+function buildDocTableStructureRequests(doc) {
+  const logoConfig = LOGO_CONFIG.docsLogo;
+  const widthsIn   = logoConfig.tableColumnWidthsIn || [];
+  const indentIn   = logoConfig.firstColumnTextIndentIn;
+  const indentPt   = (typeof indentIn === "number" && indentIn > 0) ? indentIn * 72 : null;
+  const matches    = findLogoMatches(doc, logoConfig, false);
+
+  if (matches.length === 0) return [];
+
+  // De-duplicate by table; build per-table request groups so they can be
+  // emitted in reverse-tableStartIndex order. Multiple legacy logo tables
+  // in the same segment shift each other's indexes when the earlier one
+  // has a column deleted; emitting later tables first sidesteps this.
+  const seenTables = {};
+  const groups     = [];
+
+  function cellHasText(cell) {
+    var hasText = false;
+    (cell.content || []).forEach(function(el) {
+      if (hasText || !el.paragraph) return;
+      (el.paragraph.elements || []).forEach(function(pe) {
+        if (hasText) return;
+        if (pe.textRun && pe.textRun.content && /\S/.test(pe.textRun.content)) {
+          hasText = true;
+        }
+      });
+    });
+    return hasText;
+  }
+
+  function paragraphIndentRequests(cell, segmentId, magnitudePt) {
+    var out = [];
+    (cell.content || []).forEach(function(el) {
+      if (!el.paragraph) return;
+      const startIndex = el.startIndex !== undefined ? el.startIndex : 0;
+      const endIndex   = el.endIndex;
+      if (endIndex === undefined) return;
+      out.push({
+        updateParagraphStyle: {
+          range: {
+            startIndex: startIndex,
+            endIndex:   endIndex,
+            segmentId:  segmentId,
+          },
+          paragraphStyle: {
+            indentStart:     { magnitude: magnitudePt, unit: "PT" },
+            indentFirstLine: { magnitude: magnitudePt, unit: "PT" },
+          },
+          fields: "indentStart,indentFirstLine",
+        },
+      });
+    });
+    return out;
+  }
+
+  matches.forEach(function(match) {
+    if (match.tableStartIndex === null || match.tableStartIndex === undefined) return;
+    const key = match.segmentId + "|" + match.tableStartIndex;
+    if (seenTables[key]) return;
+    seenTables[key] = true;
+
+    // Strict legacy-table discriminator. Only restructure tables that
+    // visibly look like the legacy [empty | title | logo] footer/header:
+    //   - exactly 3 columns
+    //   - col 0 empty across all rows
+    //   - matched logo sits in the LAST column
+    //   - col 1 of the matched logo's row contains non-whitespace text
+    //     (i.e., title text — distinguishes from generic 3-col image
+    //     tables that happen to have an empty leading column).
+    if (match.numColumns !== 3) return;
+    if (!match.firstColEmpty) return;
+    if (match.colIndex !== match.numColumns - 1) return;
+
+    const tableObj = findTableByStartIndex_(doc, match.segmentId, match.tableStartIndex);
+    if (!tableObj) return;
+    const matchedRow = (tableObj.tableRows || [])[match.rowIndex];
+    const middleCell = matchedRow && (matchedRow.tableCells || [])[1];
+    if (!middleCell || !cellHasText(middleCell)) return;
+
+    const groupRequests = [];
+
+    // Apply paragraph indents using PRE-deletion text indexes. After
+    // deleteTableColumn (which removes col 0), what was col 1 becomes col 0
+    // and what was col 2 becomes col 1. updateParagraphStyle does not shift
+    // text indexes, so emitting these BEFORE the deletion in the same
+    // batchUpdate is safe.
+    if (indentPt !== null) {
+      (tableObj.tableRows || []).forEach(function(row) {
+        const cells = row.tableCells || [];
+        if (cells[1]) {
+          // Old col 1 → new col 0 (title): apply configured indent.
+          paragraphIndentRequests(cells[1], match.segmentId, indentPt)
+            .forEach(function(r) { groupRequests.push(r); });
+        }
+        if (cells[2]) {
+          // Old col 2 → new col 1 (logo): zero indents so the logo image
+          // sits flush at the cell's left edge.
+          paragraphIndentRequests(cells[2], match.segmentId, 0)
+            .forEach(function(r) { groupRequests.push(r); });
+        }
+      });
+    }
+
+    groupRequests.push({
+      deleteTableColumn: {
+        tableCellLocation: {
+          tableStartLocation: { index: match.tableStartIndex, segmentId: match.segmentId },
+          rowIndex:           0,
+          columnIndex:        0,
+        },
+      },
+    });
+
+    if (widthsIn.length > 0) {
+      const remainingCols = match.numColumns - 1;
+      widthsIn.forEach(function(inches, colIdx) {
+        if (colIdx >= remainingCols) return;
+        groupRequests.push({
+          updateTableColumnProperties: {
+            tableStartLocation: { index: match.tableStartIndex, segmentId: match.segmentId },
+            columnIndices:      [colIdx],
+            tableColumnProperties: {
+              widthType: "FIXED_WIDTH",
+              width:     { magnitude: inches * 72, unit: "PT" },
+            },
+            fields: "widthType,width",
+          },
+        });
+      });
+    }
+
+    groups.push({
+      segmentId:       match.segmentId,
+      tableStartIndex: match.tableStartIndex,
+      requests:        groupRequests,
+    });
+  });
+
+  // Sort groups by tableStartIndex DESC so structural edits to later
+  // tables happen before any deleteTableColumn shifts earlier indexes.
+  groups.sort(function(a, b) { return b.tableStartIndex - a.tableStartIndex; });
+
+  const requests = [];
+  groups.forEach(function(g) {
+    g.requests.forEach(function(r) { requests.push(r); });
+  });
   return requests;
 }
 
@@ -1089,29 +1645,54 @@ function buildDocLogoRequests(doc, newLogoUrl, dryRun) {
  * @param {boolean} [dryRun=false]  If true, logs matches but makes no changes.
  */
 function replaceDocLogos(docId, dryRun) {
-  const doc = Docs.Documents.get(docId);
+  var doc = Docs.Documents.get(docId);
 
-  // Prefer an explicit direct URL from config; fall back to the Drive uc?id=
-  // format which serves image bytes for publicly shared files without export.
+  // Prefer an explicit direct URL from config; otherwise build a direct
+  // content URL from the CODEAI_LOGO_DRIVE_ID Script Property.
+  //
+  // The Docs API cannot follow Drive redirects, so the legacy
+  // `drive.google.com/uc?id=…` form returns 500 intermittently. The
+  // `lh3.googleusercontent.com/d/{id}` host is the same CDN Drive itself
+  // serves images from and returns the bytes directly — provided the file
+  // is shared as "Anyone with the link can view".
   const newLogoUrl = LOGO_CONFIG.docsLogo.newLogoUrl ||
-    ("https://drive.google.com/uc?id=" + LOGO_CONFIG.newLogoFileId);
+    ("https://lh3.googleusercontent.com/d/" + getCodeAILogoFileId_());
 
   Logger.log("  replaceDocLogos: using image URL: %s", newLogoUrl);
-  const requests = buildDocLogoRequests(doc, newLogoUrl, dryRun);
 
   if (dryRun) {
+    buildDocLogoRequests(doc, newLogoUrl, true);
     Logger.log("  replaceDocLogos: dry run complete for %s", docId);
     return;
   }
 
-  if (requests.length === 0) {
+  // Pass 1 — structural table changes (delete legacy spacer column, set
+  // configured column widths). These shift document text indexes, so we
+  // must send them in a separate batch BEFORE building logo edits, and
+  // re-fetch the doc afterwards so logo startIndexes are accurate.
+  // Gated by LOGO_CONFIG.docsLogo.restructureLegacyTable so this pass can
+  // be disabled while diagnosing layout issues.
+  if (LOGO_CONFIG.docsLogo.restructureLegacyTable !== false) {
+    const structureRequests = buildDocTableStructureRequests(doc);
+    if (structureRequests.length > 0) {
+      batchUpdateDocWithUrlFetch(docId, structureRequests);
+      Logger.log("  replaceDocLogos: %d table-structure requests submitted for %s",
+                 structureRequests.length, docId);
+      doc = Docs.Documents.get(docId);
+    }
+  } else {
+    Logger.log("  replaceDocLogos: restructureLegacyTable=false — skipping table-structure pass");
+  }
+
+  // Pass 2 — logo delete + insert against fresh indexes.
+  const logoRequests = buildDocLogoRequests(doc, newLogoUrl, false);
+  if (logoRequests.length === 0) {
     Logger.log("  replaceDocLogos: no logo matches for %s", docId);
     return;
   }
 
-  // Send via REST to avoid Advanced Service mis-serialising objectSize.
-  batchUpdateDocWithUrlFetch(docId, requests);
-  Logger.log("  replaceDocLogos: %d requests submitted for %s", requests.length, docId);
+  batchUpdateDocWithUrlFetch(docId, logoRequests);
+  Logger.log("  replaceDocLogos: %d logo requests submitted for %s", logoRequests.length, docId);
 }
 
 // ---------------------------------------------------------------------------

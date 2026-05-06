@@ -4,4 +4,5 @@ package-lock.json
 jsconfig.json
 .gitignore
 plan/
+alternate_version/
 README.md

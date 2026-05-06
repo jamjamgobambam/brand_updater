@@ -63,29 +63,6 @@
       margin-top: 4px;
     }
 
-    .checkbox-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      margin-top: 20px;
-    }
-    .checkbox-row input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; }
-    .checkbox-row label {
-      margin: 0;
-      font-size: 14px;
-      font-weight: 400;
-      cursor: pointer;
-    }
-    .dry-run-hint {
-      font-size: 12px;
-      color: #5f6368;
-      margin: 4px 0 0 26px;
-    }
-    .dry-run-hint.live-mode {
-      color: #b06000;
-      font-weight: 500;
-    }
-
     .toggle-section {
       margin-top: 24px;
     }
@@ -263,13 +240,7 @@
       </div>
     </div>
 
-    <div class="checkbox-row">
-      <input type="checkbox" id="dry-run" checked onchange="updateDryRunUi()" />
-      <label for="dry-run">Dry run</label>
-    </div>
-    <p class="dry-run-hint" id="dry-run-hint">Preview mode &mdash; logos will be scanned and logged, but no files will be modified.</p>
-
-    <button id="run-btn" onclick="runUpdate()">Preview Changes</button>
+    <button id="run-btn" onclick="runUpdate()">Apply Changes</button>
 
     <div class="spinner" id="spinner">
       <div class="spinner-ring"></div>
@@ -287,7 +258,6 @@
   <script>
     function runUpdate() {
       var url    = document.getElementById("url-input").value.trim();
-      var dryRun = document.getElementById("dry-run").checked;
       var colors = document.getElementById("toggle-colors").checked;
       var fonts  = document.getElementById("toggle-fonts").checked;
       var logo   = document.getElementById("toggle-logo").checked;
@@ -308,22 +278,7 @@
       google.script.run
         .withSuccessHandler(showResults)
         .withFailureHandler(showError)
-        .processUrl(url, dryRun, { colors: colors, fonts: fonts, logo: logo });
-    }
-
-    function updateDryRunUi() {
-      var dryRun  = document.getElementById("dry-run").checked;
-      var hint    = document.getElementById("dry-run-hint");
-      var btn     = document.getElementById("run-btn");
-      if (dryRun) {
-        hint.textContent = "Preview mode \u2014 logos will be scanned and logged, but no files will be modified.";
-        hint.classList.remove("live-mode");
-        btn.textContent  = "Preview Changes";
-      } else {
-        hint.textContent = "Live mode \u2014 matching logos will be replaced in your files. This cannot be undone.";
-        hint.classList.add("live-mode");
-        btn.textContent  = "Apply Changes";
-      }
+        .processUrl(url, false, { colors: colors, fonts: fonts, logo: logo });
     }
 
     function setRunning(running) {
