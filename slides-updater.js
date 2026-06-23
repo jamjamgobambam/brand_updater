@@ -711,35 +711,41 @@ function logAllImages(presentationId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Dumps the NATIVE structure of every slide so we can copy the exact design of
- * the section-divider and top-bar elements out of a correctly-branded deck
- * (e.g. the "example" deck) and reproduce it programmatically on decks where
+ * Dumps the NATIVE structure of a deck — SLIDES, LAYOUTS, and MASTERS — so we
+ * can copy the exact design of the section-divider and top-bar elements out of
+ * a correctly-branded deck and reproduce it programmatically on decks where
  * those elements are baked-in raster images.
  *
- * For each slide it logs:
- *   - the page background fill (solid hex, or theme color, or none)
- *   - every SHAPE: type, geometry in points AND as a fraction of the slide,
- *     solid-fill hex (or theme color), and each text run's text / font / size /
- *     foreground color
- *   - every IMAGE: geometry only (these are what we REPLACE on broken decks;
- *     a correctly-built example deck should have none on its divider slides)
+ * CRITICAL: in these decks the section-divider splash design and the colored
+ * top bar usually live on the LAYOUT (or master), not on the slide — a divider
+ * slide is often empty at the slide level and just references a "section
+ * header" layout. So this walks layouts and masters too, and reports which
+ * layout each slide uses, so a blank divider slide can be mapped to its layout.
  *
- * Slides whose text contains "Warm Up", "Activity", or "Wrap Up" are flagged
- * with >>> so the divider slides are easy to find in the log.
+ * For every page it logs, per element (recursing into GROUPS):
+ *   - SHAPE: type, geometry (points AND % of slide), solid-fill hex (or theme
+ *     color), and each text run's text / font / size / foreground color
+ *   - IMAGE: geometry only (these are what we REPLACE on broken decks)
+ *   - the page background fill (solid hex / theme color)
+ *
+ * Slides/layouts whose text contains a section word are flagged with >>>.
  *
  * Uses SlidesApp (not the REST API) so colors are already resolved to RGB and
  * geometry is reported in points — the same unit insertShape/insertTextBox use.
  *
- * @param {string} presentationId  Run this on the EXAMPLE deck first.
+ * @param {string} [presentationId]  Deck to inspect; defaults to the active
+ *                                   presentation when omitted.
  */
 function logSectionStructure(presentationId) {
-  const deck = SlidesApp.openById(presentationId);
+  const deck = presentationId
+    ? SlidesApp.openById(presentationId)
+    : SlidesApp.getActivePresentation();
   const pageW = deck.getPageWidth();
   const pageH = deck.getPageHeight();
   const SECTION_WORDS = ["warm up", "activity", "wrap up"];
 
   Logger.log("=== SECTION STRUCTURE: %s (page %sx%s pt) ===",
-    presentationId, pageW.toFixed(0), pageH.toFixed(0));
+    deck.getId(), pageW.toFixed(0), pageH.toFixed(0));
 
   function solidHex_(color) {
     // color: a SlidesApp Color (from fill/text). Returns "#rrggbb",
@@ -768,57 +774,105 @@ function logSectionStructure(presentationId) {
       W.toFixed(1), 100 * W / pageW, H.toFixed(1), 100 * H / pageH);
   }
 
-  deck.getSlides().forEach(function(slide, i) {
-    var shapes = slide.getShapes();
-    var images = slide.getImages();
+  // Dump a single PageElement, recursing into groups. `pad` is leading spaces.
+  function dumpElement_(el, pad) {
+    var type;
+    try { type = el.getPageElementType(); } catch (e) { return; }
 
-    // Is this a section divider? (any shape text contains a section word)
-    var allText = shapes.map(function(s) {
-      try { return s.getText().asString(); } catch (e) { return ""; }
-    }).join(" ").toLowerCase();
-    var isSection = SECTION_WORDS.some(function(w) { return allText.indexOf(w) !== -1; });
+    if (type === SlidesApp.PageElementType.GROUP) {
+      Logger.log("%sGROUP [%s] %s", pad, el.getObjectId(), geom_(el));
+      el.asGroup().getChildren().forEach(function(child) {
+        dumpElement_(child, pad + "  ");
+      });
+      return;
+    }
 
-    Logger.log("\n%s slide[%d] — %d shape(s), %d image(s)",
-      isSection ? ">>>" : "   ", i, shapes.length, images.length);
+    if (type === SlidesApp.PageElementType.IMAGE) {
+      Logger.log("%sIMAGE [%s] %s", pad, el.getObjectId(), geom_(el));
+      return;
+    }
 
-    // Page background
-    try {
-      var bg = slide.getBackground();
-      if (bg.getType() === SlidesApp.PageBackgroundType.SOLID) {
-        Logger.log("    background: %s", solidHex_(bg.getSolidFill().getColor()));
-      }
-    } catch (e) { /* some pages refuse background reads */ }
-
-    shapes.forEach(function(shape) {
+    if (type === SlidesApp.PageElementType.SHAPE) {
+      var shape = el.asShape();
       var fillHex = null;
       try {
         var fill = shape.getFill();
         if (fill.getType() === SlidesApp.FillType.SOLID) {
           fillHex = solidHex_(fill.getSolidFill().getColor());
         }
-      } catch (e) { /* placeholder geometry/fill can throw */ }
+      } catch (e) { /* placeholder fill can throw */ }
 
       var typeStr;
       try { typeStr = String(shape.getShapeType()); } catch (e) { typeStr = "?"; }
 
-      Logger.log("    SHAPE %s [%s] fill=%s %s",
-        typeStr, shape.getObjectId(), fillHex, geom_(shape));
+      Logger.log("%sSHAPE %s [%s] fill=%s %s",
+        pad, typeStr, shape.getObjectId(), fillHex, geom_(shape));
 
       try {
         shape.getText().getRuns().forEach(function(run) {
           var txt = run.asString().replace(/\n/g, "\\n");
           if (!txt.trim()) return;
           var st = run.getTextStyle();
-          Logger.log("      text:\"%s\" font=%s size=%s color=%s",
-            txt.length > 60 ? txt.substring(0, 60) + "…" : txt,
+          Logger.log("%s  text:\"%s\" font=%s size=%s color=%s",
+            pad, txt.length > 60 ? txt.substring(0, 60) + "…" : txt,
             st.getFontFamily(), st.getFontSize(), solidHex_(st.getForegroundColor()));
         });
       } catch (e) { /* no text */ }
-    });
+      return;
+    }
 
-    images.forEach(function(img) {
-      Logger.log("    IMAGE [%s] %s", img.getObjectId(), geom_(img));
-    });
+    // LINE, TABLE, VIDEO, WORD_ART, SHEETS_CHART, etc.
+    Logger.log("%s%s [%s] %s", pad, String(type), el.getObjectId(), geom_(el));
+  }
+
+  // Dump a whole page (slide / layout / master). Returns true if its text
+  // contains a section word.
+  function dumpPage_(page, label) {
+    var els = page.getPageElements();
+    var allText = els.map(function(e) {
+      try {
+        return e.getPageElementType() === SlidesApp.PageElementType.SHAPE
+          ? e.asShape().getText().asString() : "";
+      } catch (err) { return ""; }
+    }).join(" ").toLowerCase();
+    var isSection = SECTION_WORDS.some(function(w) { return allText.indexOf(w) !== -1; });
+
+    Logger.log("\n%s %s — %d element(s)", isSection ? ">>>" : "   ", label, els.length);
+
+    try {
+      var bg = page.getBackground();
+      if (bg.getType() === SlidesApp.PageBackgroundType.SOLID) {
+        Logger.log("    background: %s", solidHex_(bg.getSolidFill().getColor()));
+      }
+    } catch (e) { /* some pages refuse background reads */ }
+
+    els.forEach(function(el) { dumpElement_(el, "    "); });
+    return isSection;
+  }
+
+  // --- Slides (report the layout each one uses) ---
+  Logger.log("\n########## SLIDES ##########");
+  deck.getSlides().forEach(function(slide, i) {
+    var layName = "?";
+    try {
+      var lay = slide.getLayout();
+      layName = lay ? (lay.getLayoutName() + " / " + lay.getObjectId()) : "(none)";
+    } catch (e) { /* layout unavailable */ }
+    dumpPage_(slide, "slide[" + i + "]  layout=" + layName);
+  });
+
+  // --- Layouts (where divider/top-bar designs usually live) ---
+  Logger.log("\n########## LAYOUTS ##########");
+  deck.getLayouts().forEach(function(layout, i) {
+    var name = "?";
+    try { name = layout.getLayoutName(); } catch (e) {}
+    dumpPage_(layout, "layout[" + i + "]  name=" + name + " / " + layout.getObjectId());
+  });
+
+  // --- Masters ---
+  Logger.log("\n########## MASTERS ##########");
+  deck.getMasters().forEach(function(master, i) {
+    dumpPage_(master, "master[" + i + "]  " + master.getObjectId());
   });
 
   Logger.log("\n=== DONE ===");
