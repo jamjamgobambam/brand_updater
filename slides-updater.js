@@ -117,8 +117,14 @@ function buildInlineColorRequests(pages, colorMap) {
       }
     }
 
-    // --- Page elements ---
-    (page.pageElements || []).forEach(function(element) {
+    // --- Page elements (recurse into grouped children) ---
+    // Grouped shapes live under element.elementGroup.children and are
+    // otherwise skipped entirely, so colors inside a group (e.g. decorative
+    // ellipses/labels) never get recolored. Recurse so they're covered.
+    function processElement(element) {
+      if (element.elementGroup && element.elementGroup.children) {
+        element.elementGroup.children.forEach(processElement);
+      }
       const eid = element.objectId;
 
       // Shape fill
@@ -342,7 +348,8 @@ function buildInlineColorRequests(pages, colorMap) {
           });
         }
       }
-    });
+    }
+    (page.pageElements || []).forEach(processElement);
   });
 
   return requests;
@@ -396,7 +403,12 @@ function buildFontRequests(pages, fontMap) {
   const requests = [];
 
   pages.forEach(function(page) {
-    (page.pageElements || []).forEach(function(element) {
+    // Recurse into grouped children (element.elementGroup.children) so fonts
+    // inside groups are replaced too — they are otherwise skipped entirely.
+    function processElement(element) {
+      if (element.elementGroup && element.elementGroup.children) {
+        element.elementGroup.children.forEach(processElement);
+      }
       const eid = element.objectId;
 
       // Helper: builds font requests for a single text elements array,
@@ -479,7 +491,8 @@ function buildFontRequests(pages, fontMap) {
           });
         });
       }
-    });
+    }
+    (page.pageElements || []).forEach(processElement);
   });
 
   return requests;
