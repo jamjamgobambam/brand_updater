@@ -1419,6 +1419,163 @@ function replacePlaceholderColors(presentationId) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 20 — convertPictureBackgrounds
+// ---------------------------------------------------------------------------
+
+/**
+ * Brand-furniture geometry/colors for reconstructing slides whose branding is
+ * baked into a PICTURE page background. Measurements are copied from the
+ * correctly-built example deck (720x405pt). Colors default to the new brand
+ * purple for all section furniture; edit SECTION_COLORS / TITLE_BG_HEX to vary
+ * the bar/band color per section.
+ */
+const BG_RECON = {
+  TITLE_BG_HEX: "#6A62D9",         // full-bleed background for the title slide
+  DIVIDER_BG_HEX: "#FFFFFF",       // section-divider page background (band sits on top)
+  CONTENT_BG_HEX: "#FFFFFF",       // content-slide page background (top bar sits on top)
+  FURNITURE_DEFAULT_HEX: "#6A62D9",// fallback bar/band color
+  SECTION_COLORS: {                // bar/band color per section
+    "Warm Up": "#6A62D9",
+    "Activity": "#6A62D9",
+    "Wrap Up": "#6A62D9",
+  },
+  WORD_COLOR_HEX: "#FFFFFF",       // divider section-word text color
+  WORD_FONT: "Geist",
+  WORD_SIZE_PT: 30,
+  // Top bar on content slides (full width strip at the very top).
+  BAR: { left: 0, top: 0, height: 27.4 },
+  // Mid-slide band + centered word on section-divider slides.
+  BAND: { left: 0, top: 166.5, height: 79.2 },
+  WORD: { left: 217, top: 166.5, width: 286, height: 51 },
+};
+
+const SECTION_WORDS_CANON = ["Warm Up", "Activity", "Wrap Up"];
+
+/**
+ * Returns the canonical section word found in a slide's shape text, or null.
+ * @param {SlidesApp.Slide} slide
+ */
+function slideSectionLabel_(slide) {
+  var text = "";
+  try {
+    slide.getShapes().forEach(function(s) {
+      try { text += " " + s.getText().asString(); } catch (e) {}
+    });
+  } catch (e) {}
+  text = text.toLowerCase();
+  for (var i = 0; i < SECTION_WORDS_CANON.length; i++) {
+    if (text.indexOf(SECTION_WORDS_CANON[i].toLowerCase()) !== -1) {
+      return SECTION_WORDS_CANON[i];
+    }
+  }
+  return null;
+}
+
+/**
+ * Reconstructs slides whose page background is a flattened PICTURE into native
+ * brand shapes (matching the example deck), then replaces the picture with a
+ * solid background so the result is fully editable and theme-driven.
+ *
+ *   - Title slide (index 0)  → solid brand-purple background; keep title text.
+ *   - Section divider (no page elements) → white background + full-width band +
+ *     centered section word (label inferred from neighboring content slides,
+ *     since divider slides are textless).
+ *   - Content slide (has elements) → white background + full-width top bar,
+ *     sent to back so the existing footer label sits on it.
+ *
+ * Only slides with a PICTURE background are touched; native/solid slides are
+ * left alone. Uses SlidesApp; fills use explicit brand hex (the theme is
+ * already on the new palette, so a later updater run leaves these as-is).
+ *
+ * @param {string}  presentationId
+ * @param {boolean} [dryRun=false]  Log intended changes without editing.
+ */
+function convertPictureBackgrounds(presentationId, dryRun) {
+  const isDryRun = dryRun === true;
+  const deck = SlidesApp.openById(presentationId);
+  const pageW = deck.getPageWidth();
+  const slides = deck.getSlides();
+
+  // Pre-compute each slide's own section label so dividers can borrow from
+  // the nearest following (else preceding) content slide.
+  const labels = slides.map(slideSectionLabel_);
+  function inferLabel(i) {
+    if (labels[i]) return labels[i];
+    for (var f = i + 1; f < labels.length; f++) if (labels[f]) return labels[f];
+    for (var b = i - 1; b >= 0; b--) if (labels[b]) return labels[b];
+    return null;
+  }
+
+  function furnitureColor(label) {
+    return (label && BG_RECON.SECTION_COLORS[label]) || BG_RECON.FURNITURE_DEFAULT_HEX;
+  }
+
+  function addBar_(slide, top, height, hex) {
+    var bar = slide.insertShape(SlidesApp.ShapeType.RECTANGLE, BG_RECON.BAR.left, top, pageW, height);
+    bar.getFill().setSolidFill(hex);
+    bar.getBorder().setTransparent();
+    bar.sendToBack(); // keep existing footer/body text above the furniture
+    return bar;
+  }
+
+  const counts = { title: 0, divider: 0, content: 0, skipped: 0 };
+
+  slides.forEach(function(slide, i) {
+    var bg;
+    try { bg = slide.getBackground(); } catch (e) { counts.skipped++; return; }
+    if (bg.getType() !== SlidesApp.PageBackgroundType.PICTURE) { counts.skipped++; return; }
+
+    var kind = (i === 0) ? "title"
+             : (slide.getPageElements().length === 0) ? "divider"
+             : "content";
+    var label = inferLabel(i);
+
+    if (isDryRun) {
+      counts[kind]++;
+      Logger.log("[DRY RUN] slide[%d] %s — would reconstruct (section=%s)", i, kind, label || "?");
+      return;
+    }
+
+    if (kind === "title") {
+      slide.getBackground().setSolidFill(BG_RECON.TITLE_BG_HEX);
+      counts.title++;
+      return;
+    }
+
+    if (kind === "content") {
+      slide.getBackground().setSolidFill(BG_RECON.CONTENT_BG_HEX);
+      addBar_(slide, BG_RECON.BAR.top, BG_RECON.BAR.height, furnitureColor(label));
+      counts.content++;
+      return;
+    }
+
+    // divider
+    slide.getBackground().setSolidFill(BG_RECON.DIVIDER_BG_HEX);
+    addBar_(slide, BG_RECON.BAND.top, BG_RECON.BAND.height, furnitureColor(label));
+    if (label) {
+      var tb = slide.insertTextBox(
+        label, BG_RECON.WORD.left, BG_RECON.WORD.top, BG_RECON.WORD.width, BG_RECON.WORD.height
+      );
+      var ts = tb.getText().getTextStyle();
+      ts.setFontFamily(BG_RECON.WORD_FONT);
+      ts.setFontSize(BG_RECON.WORD_SIZE_PT);
+      ts.setForegroundColor(BG_RECON.WORD_COLOR_HEX);
+      tb.getText().getParagraphStyle().setParagraphAlignment(SlidesApp.ParagraphAlignment.CENTER);
+      tb.setContentAlignment(SlidesApp.ContentAlignment.MIDDLE);
+    } else {
+      Logger.log("slide[%d] divider — no section label could be inferred; band added without a word", i);
+    }
+    counts.divider++;
+  });
+
+  Logger.log(
+    "Picture-background reconstruction %s — title:%d divider:%d content:%d skipped:%d",
+    isDryRun ? "dry run" : "complete",
+    counts.title, counts.divider, counts.content, counts.skipped
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Step 10 — updateSlidesPresentation (public orchestrator)
 // ---------------------------------------------------------------------------
 
@@ -1428,9 +1585,13 @@ function replacePlaceholderColors(presentationId) {
  *   2. Replace all inline (direct) RGB colors
  *   3. Replace Poppins / Figtree fonts with Geist
  *   4. Replace logo images on master/layout slides
+ *   5. Reconstruct PICTURE-background slides as native brand shapes
  *
  * @param {string}  presentationId
- * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
+ * @param {boolean} [dryRun=false]  Passed through to replaceLogos and
+ *                                  convertPictureBackgrounds.
+ * @param {Object}  [options]  Toggles: { colors, fonts, logo, backgrounds }.
+ *                             backgrounds defaults ON (skip only if === false).
  */
 function updateSlidesPresentation(presentationId, dryRun, options) {
   var opts = options || { colors: true, fonts: true, logo: true };
@@ -1457,5 +1618,13 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
   if (opts.logo) {
     replaceLogos(presentationId, dryRun, presentation);
     Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
+  }
+
+  // Reconstruct slides whose branding is baked into a PICTURE page background
+  // (section dividers, title splash, top bars) as native brand shapes.
+  // Default on; pass opts.backgrounds === false to skip.
+  if (opts.backgrounds !== false) {
+    convertPictureBackgrounds(presentationId, dryRun);
+    Logger.log("  ✓ Picture backgrounds reconstructed %s", dryRun ? "(dry run)" : "");
   }
 }
