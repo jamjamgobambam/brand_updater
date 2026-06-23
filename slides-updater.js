@@ -707,6 +707,124 @@ function logAllImages(presentationId) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 15 — logSectionStructure (diagnostic utility)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dumps the NATIVE structure of every slide so we can copy the exact design of
+ * the section-divider and top-bar elements out of a correctly-branded deck
+ * (e.g. the "example" deck) and reproduce it programmatically on decks where
+ * those elements are baked-in raster images.
+ *
+ * For each slide it logs:
+ *   - the page background fill (solid hex, or theme color, or none)
+ *   - every SHAPE: type, geometry in points AND as a fraction of the slide,
+ *     solid-fill hex (or theme color), and each text run's text / font / size /
+ *     foreground color
+ *   - every IMAGE: geometry only (these are what we REPLACE on broken decks;
+ *     a correctly-built example deck should have none on its divider slides)
+ *
+ * Slides whose text contains "Warm Up", "Activity", or "Wrap Up" are flagged
+ * with >>> so the divider slides are easy to find in the log.
+ *
+ * Uses SlidesApp (not the REST API) so colors are already resolved to RGB and
+ * geometry is reported in points — the same unit insertShape/insertTextBox use.
+ *
+ * @param {string} presentationId  Run this on the EXAMPLE deck first.
+ */
+function logSectionStructure(presentationId) {
+  const deck = SlidesApp.openById(presentationId);
+  const pageW = deck.getPageWidth();
+  const pageH = deck.getPageHeight();
+  const SECTION_WORDS = ["warm up", "activity", "wrap up"];
+
+  Logger.log("=== SECTION STRUCTURE: %s (page %sx%s pt) ===",
+    presentationId, pageW.toFixed(0), pageH.toFixed(0));
+
+  function solidHex_(color) {
+    // color: a SlidesApp Color (from fill/text). Returns "#rrggbb",
+    // "theme:NAME", or null.
+    try {
+      if (!color) return null;
+      if (color.getColorType() === SlidesApp.ColorType.RGB) {
+        var c = color.asRgbColor();
+        return ("#" +
+          (c.getRed()   < 16 ? "0" : "") + c.getRed().toString(16) +
+          (c.getGreen() < 16 ? "0" : "") + c.getGreen().toString(16) +
+          (c.getBlue()  < 16 ? "0" : "") + c.getBlue().toString(16));
+      }
+      if (color.getColorType() === SlidesApp.ColorType.THEME) {
+        return "theme:" + color.asThemeColor().getThemeColorType();
+      }
+    } catch (e) { /* fall through */ }
+    return null;
+  }
+
+  function geom_(el) {
+    var L = el.getLeft(), T = el.getTop(), W = el.getWidth(), H = el.getHeight();
+    return Utilities.formatString(
+      "x=%spt(%.0f%%) y=%spt(%.0f%%) w=%spt(%.0f%%) h=%spt(%.0f%%)",
+      L.toFixed(1), 100 * L / pageW, T.toFixed(1), 100 * T / pageH,
+      W.toFixed(1), 100 * W / pageW, H.toFixed(1), 100 * H / pageH);
+  }
+
+  deck.getSlides().forEach(function(slide, i) {
+    var shapes = slide.getShapes();
+    var images = slide.getImages();
+
+    // Is this a section divider? (any shape text contains a section word)
+    var allText = shapes.map(function(s) {
+      try { return s.getText().asString(); } catch (e) { return ""; }
+    }).join(" ").toLowerCase();
+    var isSection = SECTION_WORDS.some(function(w) { return allText.indexOf(w) !== -1; });
+
+    Logger.log("\n%s slide[%d] — %d shape(s), %d image(s)",
+      isSection ? ">>>" : "   ", i, shapes.length, images.length);
+
+    // Page background
+    try {
+      var bg = slide.getBackground();
+      if (bg.getType() === SlidesApp.PageBackgroundType.SOLID) {
+        Logger.log("    background: %s", solidHex_(bg.getSolidFill().getColor()));
+      }
+    } catch (e) { /* some pages refuse background reads */ }
+
+    shapes.forEach(function(shape) {
+      var fillHex = null;
+      try {
+        var fill = shape.getFill();
+        if (fill.getType() === SlidesApp.FillType.SOLID) {
+          fillHex = solidHex_(fill.getSolidFill().getColor());
+        }
+      } catch (e) { /* placeholder geometry/fill can throw */ }
+
+      var typeStr;
+      try { typeStr = String(shape.getShapeType()); } catch (e) { typeStr = "?"; }
+
+      Logger.log("    SHAPE %s [%s] fill=%s %s",
+        typeStr, shape.getObjectId(), fillHex, geom_(shape));
+
+      try {
+        shape.getText().getRuns().forEach(function(run) {
+          var txt = run.asString().replace(/\n/g, "\\n");
+          if (!txt.trim()) return;
+          var st = run.getTextStyle();
+          Logger.log("      text:\"%s\" font=%s size=%s color=%s",
+            txt.length > 60 ? txt.substring(0, 60) + "…" : txt,
+            st.getFontFamily(), st.getFontSize(), solidHex_(st.getForegroundColor()));
+        });
+      } catch (e) { /* no text */ }
+    });
+
+    images.forEach(function(img) {
+      Logger.log("    IMAGE [%s] %s", img.getObjectId(), geom_(img));
+    });
+  });
+
+  Logger.log("\n=== DONE ===");
+}
+
+// ---------------------------------------------------------------------------
 // Step 17 — Gemini-based logo replacement
 // ---------------------------------------------------------------------------
 
@@ -1228,13 +1346,8 @@ function replacePlaceholderColors(presentationId) {
  * Runs the full brand update pipeline on a single presentation:
  *   1. Update master theme ColorScheme (Accent slots → new palette)
  *   2. Replace all inline (direct) RGB colors
-<<<<<<< HEAD
- *   3. Replace Poppins / Figtree fonts with Lexend
- *   4. Replace logo images on master, layout, and slide pages
-=======
  *   3. Replace Poppins / Figtree fonts with Geist
  *   4. Replace logo images on master/layout slides
->>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
  *
  * @param {string}  presentationId
  * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
@@ -1256,11 +1369,6 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
     Logger.log("  ✓ Placeholder shape colors replaced");
   }
 
-<<<<<<< HEAD
-  // 4. Logos on master, layout, and slide pages
-  replaceLogos(presentationId, dryRun, presentation);
-  Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
-=======
   if (opts.fonts) {
     replaceFonts(presentationId, presentation);
     Logger.log("  ✓ Fonts replaced");
@@ -1270,5 +1378,4 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
     replaceLogos(presentationId, dryRun, presentation);
     Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
   }
->>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
 }
