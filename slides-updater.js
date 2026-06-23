@@ -854,10 +854,23 @@ function logSectionStructure(presentationId) {
 
     try {
       var bg = page.getBackground();
-      if (bg.getType() === SlidesApp.PageBackgroundType.SOLID) {
-        Logger.log("    background: %s", solidHex_(bg.getSolidFill().getColor()));
+      var bt = bg.getType();
+      if (bt === SlidesApp.PageBackgroundType.SOLID) {
+        Logger.log("    background: SOLID %s", solidHex_(bg.getSolidFill().getColor()));
+      } else if (bt === SlidesApp.PageBackgroundType.PICTURE) {
+        // PICTURE backgrounds are baked-in raster art — the color/font passes
+        // cannot touch them. This is what we need to convert to native.
+        var pf = bg.getPictureFill && bg.getPictureFill();
+        var url = "(no url)";
+        try { url = pf ? pf.getContentUrl() : "(no fill)"; } catch (e2) {}
+        Logger.log("    background: PICTURE %s", url);
+      } else {
+        // NONE = inherits from layout/master; UNSUPPORTED = something else.
+        Logger.log("    background: %s", String(bt));
       }
-    } catch (e) { /* some pages refuse background reads */ }
+    } catch (e) {
+      Logger.log("    background: (read failed: %s)", e && e.message);
+    }
 
     els.forEach(function(el) { dumpElement_(el, "    "); });
     return isSection;
