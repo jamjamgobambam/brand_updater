@@ -113,8 +113,6 @@ const COLOR_DISTANCE_THRESHOLD = 15;
  * All threshold values are percentages of the slide dimensions (0.0–1.0).
  */
 const LOGO_CONFIG = {
-<<<<<<< HEAD
-  newLogoFileId: "1pIoxLkryTKZjwuWliRp7DQCGKb37F_tU",
   newLogoUrl:    "https://raw.githubusercontent.com/jamjamgobambam/brand_updater/615367949880121699655c766cb27c68d6206ebe/assets/logo.png",
 
   slidesLogo: {
@@ -155,7 +153,6 @@ const LOGO_CONFIG = {
     },
   },
 
-=======
   newLogoFileId: "1k9CbaVCdgAb5oAfbO5myAG2xH049jGlu",
   // cornerLogo / titleLogo position thresholds are no longer used for slides
   // (Gemini-based classifier handles every image), but kept for reference and

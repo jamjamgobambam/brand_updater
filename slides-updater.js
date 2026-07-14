@@ -117,8 +117,14 @@ function buildInlineColorRequests(pages, colorMap) {
       }
     }
 
-    // --- Page elements ---
-    (page.pageElements || []).forEach(function(element) {
+    // --- Page elements (recurse into grouped children) ---
+    // Grouped shapes live under element.elementGroup.children and are
+    // otherwise skipped entirely, so colors inside a group (e.g. decorative
+    // ellipses/labels) never get recolored. Recurse so they're covered.
+    function processElement(element) {
+      if (element.elementGroup && element.elementGroup.children) {
+        element.elementGroup.children.forEach(processElement);
+      }
       const eid = element.objectId;
 
       // Shape fill
@@ -342,7 +348,8 @@ function buildInlineColorRequests(pages, colorMap) {
           });
         }
       }
-    });
+    }
+    (page.pageElements || []).forEach(processElement);
   });
 
   return requests;
@@ -396,7 +403,12 @@ function buildFontRequests(pages, fontMap) {
   const requests = [];
 
   pages.forEach(function(page) {
-    (page.pageElements || []).forEach(function(element) {
+    // Recurse into grouped children (element.elementGroup.children) so fonts
+    // inside groups are replaced too — they are otherwise skipped entirely.
+    function processElement(element) {
+      if (element.elementGroup && element.elementGroup.children) {
+        element.elementGroup.children.forEach(processElement);
+      }
       const eid = element.objectId;
 
       // Helper: builds font requests for a single text elements array,
@@ -479,7 +491,8 @@ function buildFontRequests(pages, fontMap) {
           });
         });
       }
-    });
+    }
+    (page.pageElements || []).forEach(processElement);
   });
 
   return requests;
@@ -704,6 +717,191 @@ function logAllImages(presentationId) {
       );
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Step 15 — logSectionStructure (diagnostic utility)
+// ---------------------------------------------------------------------------
+
+/**
+ * Dumps the NATIVE structure of a deck — SLIDES, LAYOUTS, and MASTERS — so we
+ * can copy the exact design of the section-divider and top-bar elements out of
+ * a correctly-branded deck and reproduce it programmatically on decks where
+ * those elements are baked-in raster images.
+ *
+ * CRITICAL: in these decks the section-divider splash design and the colored
+ * top bar usually live on the LAYOUT (or master), not on the slide — a divider
+ * slide is often empty at the slide level and just references a "section
+ * header" layout. So this walks layouts and masters too, and reports which
+ * layout each slide uses, so a blank divider slide can be mapped to its layout.
+ *
+ * For every page it logs, per element (recursing into GROUPS):
+ *   - SHAPE: type, geometry (points AND % of slide), solid-fill hex (or theme
+ *     color), and each text run's text / font / size / foreground color
+ *   - IMAGE: geometry only (these are what we REPLACE on broken decks)
+ *   - the page background fill (solid hex / theme color)
+ *
+ * Slides/layouts whose text contains a section word are flagged with >>>.
+ *
+ * Uses SlidesApp (not the REST API) so colors are already resolved to RGB and
+ * geometry is reported in points — the same unit insertShape/insertTextBox use.
+ *
+ * @param {string} [presentationId]  Deck to inspect; defaults to the active
+ *                                   presentation when omitted.
+ */
+function logSectionStructure(presentationId) {
+  const deck = presentationId
+    ? SlidesApp.openById(presentationId)
+    : SlidesApp.getActivePresentation();
+  const pageW = deck.getPageWidth();
+  const pageH = deck.getPageHeight();
+  const SECTION_WORDS = ["warm up", "activity", "wrap up"];
+
+  Logger.log("=== SECTION STRUCTURE: %s (page %sx%s pt) ===",
+    deck.getId(), pageW.toFixed(0), pageH.toFixed(0));
+
+  function solidHex_(color) {
+    // color: a SlidesApp Color (from fill/text). Returns "#rrggbb",
+    // "theme:NAME", or null.
+    try {
+      if (!color) return null;
+      if (color.getColorType() === SlidesApp.ColorType.RGB) {
+        var c = color.asRgbColor();
+        return ("#" +
+          (c.getRed()   < 16 ? "0" : "") + c.getRed().toString(16) +
+          (c.getGreen() < 16 ? "0" : "") + c.getGreen().toString(16) +
+          (c.getBlue()  < 16 ? "0" : "") + c.getBlue().toString(16));
+      }
+      if (color.getColorType() === SlidesApp.ColorType.THEME) {
+        return "theme:" + color.asThemeColor().getThemeColorType();
+      }
+    } catch (e) { /* fall through */ }
+    return null;
+  }
+
+  function geom_(el) {
+    var L = el.getLeft(), T = el.getTop(), W = el.getWidth(), H = el.getHeight();
+    return Utilities.formatString(
+      "x=%spt(%.0f%%) y=%spt(%.0f%%) w=%spt(%.0f%%) h=%spt(%.0f%%)",
+      L.toFixed(1), 100 * L / pageW, T.toFixed(1), 100 * T / pageH,
+      W.toFixed(1), 100 * W / pageW, H.toFixed(1), 100 * H / pageH);
+  }
+
+  // Dump a single PageElement, recursing into groups. `pad` is leading spaces.
+  function dumpElement_(el, pad) {
+    var type;
+    try { type = el.getPageElementType(); } catch (e) { return; }
+
+    if (type === SlidesApp.PageElementType.GROUP) {
+      Logger.log("%sGROUP [%s] %s", pad, el.getObjectId(), geom_(el));
+      el.asGroup().getChildren().forEach(function(child) {
+        dumpElement_(child, pad + "  ");
+      });
+      return;
+    }
+
+    if (type === SlidesApp.PageElementType.IMAGE) {
+      Logger.log("%sIMAGE [%s] %s", pad, el.getObjectId(), geom_(el));
+      return;
+    }
+
+    if (type === SlidesApp.PageElementType.SHAPE) {
+      var shape = el.asShape();
+      var fillHex = null;
+      try {
+        var fill = shape.getFill();
+        if (fill.getType() === SlidesApp.FillType.SOLID) {
+          fillHex = solidHex_(fill.getSolidFill().getColor());
+        }
+      } catch (e) { /* placeholder fill can throw */ }
+
+      var typeStr;
+      try { typeStr = String(shape.getShapeType()); } catch (e) { typeStr = "?"; }
+
+      Logger.log("%sSHAPE %s [%s] fill=%s %s",
+        pad, typeStr, shape.getObjectId(), fillHex, geom_(shape));
+
+      try {
+        shape.getText().getRuns().forEach(function(run) {
+          var txt = run.asString().replace(/\n/g, "\\n");
+          if (!txt.trim()) return;
+          var st = run.getTextStyle();
+          Logger.log("%s  text:\"%s\" font=%s size=%s color=%s",
+            pad, txt.length > 60 ? txt.substring(0, 60) + "…" : txt,
+            st.getFontFamily(), st.getFontSize(), solidHex_(st.getForegroundColor()));
+        });
+      } catch (e) { /* no text */ }
+      return;
+    }
+
+    // LINE, TABLE, VIDEO, WORD_ART, SHEETS_CHART, etc.
+    Logger.log("%s%s [%s] %s", pad, String(type), el.getObjectId(), geom_(el));
+  }
+
+  // Dump a whole page (slide / layout / master). Returns true if its text
+  // contains a section word.
+  function dumpPage_(page, label) {
+    var els = page.getPageElements();
+    var allText = els.map(function(e) {
+      try {
+        return e.getPageElementType() === SlidesApp.PageElementType.SHAPE
+          ? e.asShape().getText().asString() : "";
+      } catch (err) { return ""; }
+    }).join(" ").toLowerCase();
+    var isSection = SECTION_WORDS.some(function(w) { return allText.indexOf(w) !== -1; });
+
+    Logger.log("\n%s %s — %d element(s)", isSection ? ">>>" : "   ", label, els.length);
+
+    try {
+      var bg = page.getBackground();
+      var bt = bg.getType();
+      if (bt === SlidesApp.PageBackgroundType.SOLID) {
+        Logger.log("    background: SOLID %s", solidHex_(bg.getSolidFill().getColor()));
+      } else if (bt === SlidesApp.PageBackgroundType.PICTURE) {
+        // PICTURE backgrounds are baked-in raster art — the color/font passes
+        // cannot touch them. This is what we need to convert to native.
+        var pf = bg.getPictureFill && bg.getPictureFill();
+        var url = "(no url)";
+        try { url = pf ? pf.getContentUrl() : "(no fill)"; } catch (e2) {}
+        Logger.log("    background: PICTURE %s", url);
+      } else {
+        // NONE = inherits from layout/master; UNSUPPORTED = something else.
+        Logger.log("    background: %s", String(bt));
+      }
+    } catch (e) {
+      Logger.log("    background: (read failed: %s)", e && e.message);
+    }
+
+    els.forEach(function(el) { dumpElement_(el, "    "); });
+    return isSection;
+  }
+
+  // --- Slides (report the layout each one uses) ---
+  Logger.log("\n########## SLIDES ##########");
+  deck.getSlides().forEach(function(slide, i) {
+    var layName = "?";
+    try {
+      var lay = slide.getLayout();
+      layName = lay ? (lay.getLayoutName() + " / " + lay.getObjectId()) : "(none)";
+    } catch (e) { /* layout unavailable */ }
+    dumpPage_(slide, "slide[" + i + "]  layout=" + layName);
+  });
+
+  // --- Layouts (where divider/top-bar designs usually live) ---
+  Logger.log("\n########## LAYOUTS ##########");
+  deck.getLayouts().forEach(function(layout, i) {
+    var name = "?";
+    try { name = layout.getLayoutName(); } catch (e) {}
+    dumpPage_(layout, "layout[" + i + "]  name=" + name + " / " + layout.getObjectId());
+  });
+
+  // --- Masters ---
+  Logger.log("\n########## MASTERS ##########");
+  deck.getMasters().forEach(function(master, i) {
+    dumpPage_(master, "master[" + i + "]  " + master.getObjectId());
+  });
+
+  Logger.log("\n=== DONE ===");
 }
 
 // ---------------------------------------------------------------------------
@@ -1221,6 +1419,163 @@ function replacePlaceholderColors(presentationId) {
 }
 
 // ---------------------------------------------------------------------------
+// Step 20 — convertPictureBackgrounds
+// ---------------------------------------------------------------------------
+
+/**
+ * Brand-furniture geometry/colors for reconstructing slides whose branding is
+ * baked into a PICTURE page background. Measurements are copied from the
+ * correctly-built example deck (720x405pt). Colors default to the new brand
+ * purple for all section furniture; edit SECTION_COLORS / TITLE_BG_HEX to vary
+ * the bar/band color per section.
+ */
+const BG_RECON = {
+  TITLE_BG_HEX: "#6A62D9",         // full-bleed background for the title slide
+  DIVIDER_BG_HEX: "#FFFFFF",       // section-divider page background (band sits on top)
+  CONTENT_BG_HEX: "#FFFFFF",       // content-slide page background (top bar sits on top)
+  FURNITURE_DEFAULT_HEX: "#6A62D9",// fallback bar/band color
+  SECTION_COLORS: {                // bar/band color per section
+    "Warm Up": "#6A62D9",
+    "Activity": "#6A62D9",
+    "Wrap Up": "#6A62D9",
+  },
+  WORD_COLOR_HEX: "#FFFFFF",       // divider section-word text color
+  WORD_FONT: "Geist",
+  WORD_SIZE_PT: 30,
+  // Top bar on content slides (full width strip at the very top).
+  BAR: { left: 0, top: 0, height: 27.4 },
+  // Mid-slide band + centered word on section-divider slides.
+  BAND: { left: 0, top: 166.5, height: 79.2 },
+  WORD: { left: 217, top: 166.5, width: 286, height: 51 },
+};
+
+const SECTION_WORDS_CANON = ["Warm Up", "Activity", "Wrap Up"];
+
+/**
+ * Returns the canonical section word found in a slide's shape text, or null.
+ * @param {SlidesApp.Slide} slide
+ */
+function slideSectionLabel_(slide) {
+  var text = "";
+  try {
+    slide.getShapes().forEach(function(s) {
+      try { text += " " + s.getText().asString(); } catch (e) {}
+    });
+  } catch (e) {}
+  text = text.toLowerCase();
+  for (var i = 0; i < SECTION_WORDS_CANON.length; i++) {
+    if (text.indexOf(SECTION_WORDS_CANON[i].toLowerCase()) !== -1) {
+      return SECTION_WORDS_CANON[i];
+    }
+  }
+  return null;
+}
+
+/**
+ * Reconstructs slides whose page background is a flattened PICTURE into native
+ * brand shapes (matching the example deck), then replaces the picture with a
+ * solid background so the result is fully editable and theme-driven.
+ *
+ *   - Title slide (index 0)  → solid brand-purple background; keep title text.
+ *   - Section divider (no page elements) → white background + full-width band +
+ *     centered section word (label inferred from neighboring content slides,
+ *     since divider slides are textless).
+ *   - Content slide (has elements) → white background + full-width top bar,
+ *     sent to back so the existing footer label sits on it.
+ *
+ * Only slides with a PICTURE background are touched; native/solid slides are
+ * left alone. Uses SlidesApp; fills use explicit brand hex (the theme is
+ * already on the new palette, so a later updater run leaves these as-is).
+ *
+ * @param {string}  presentationId
+ * @param {boolean} [dryRun=false]  Log intended changes without editing.
+ */
+function convertPictureBackgrounds(presentationId, dryRun) {
+  const isDryRun = dryRun === true;
+  const deck = SlidesApp.openById(presentationId);
+  const pageW = deck.getPageWidth();
+  const slides = deck.getSlides();
+
+  // Pre-compute each slide's own section label so dividers can borrow from
+  // the nearest following (else preceding) content slide.
+  const labels = slides.map(slideSectionLabel_);
+  function inferLabel(i) {
+    if (labels[i]) return labels[i];
+    for (var f = i + 1; f < labels.length; f++) if (labels[f]) return labels[f];
+    for (var b = i - 1; b >= 0; b--) if (labels[b]) return labels[b];
+    return null;
+  }
+
+  function furnitureColor(label) {
+    return (label && BG_RECON.SECTION_COLORS[label]) || BG_RECON.FURNITURE_DEFAULT_HEX;
+  }
+
+  function addBar_(slide, top, height, hex) {
+    var bar = slide.insertShape(SlidesApp.ShapeType.RECTANGLE, BG_RECON.BAR.left, top, pageW, height);
+    bar.getFill().setSolidFill(hex);
+    bar.getBorder().setTransparent();
+    bar.sendToBack(); // keep existing footer/body text above the furniture
+    return bar;
+  }
+
+  const counts = { title: 0, divider: 0, content: 0, skipped: 0 };
+
+  slides.forEach(function(slide, i) {
+    var bg;
+    try { bg = slide.getBackground(); } catch (e) { counts.skipped++; return; }
+    if (bg.getType() !== SlidesApp.PageBackgroundType.PICTURE) { counts.skipped++; return; }
+
+    var kind = (i === 0) ? "title"
+             : (slide.getPageElements().length === 0) ? "divider"
+             : "content";
+    var label = inferLabel(i);
+
+    if (isDryRun) {
+      counts[kind]++;
+      Logger.log("[DRY RUN] slide[%d] %s — would reconstruct (section=%s)", i, kind, label || "?");
+      return;
+    }
+
+    if (kind === "title") {
+      slide.getBackground().setSolidFill(BG_RECON.TITLE_BG_HEX);
+      counts.title++;
+      return;
+    }
+
+    if (kind === "content") {
+      slide.getBackground().setSolidFill(BG_RECON.CONTENT_BG_HEX);
+      addBar_(slide, BG_RECON.BAR.top, BG_RECON.BAR.height, furnitureColor(label));
+      counts.content++;
+      return;
+    }
+
+    // divider
+    slide.getBackground().setSolidFill(BG_RECON.DIVIDER_BG_HEX);
+    addBar_(slide, BG_RECON.BAND.top, BG_RECON.BAND.height, furnitureColor(label));
+    if (label) {
+      var tb = slide.insertTextBox(
+        label, BG_RECON.WORD.left, BG_RECON.WORD.top, BG_RECON.WORD.width, BG_RECON.WORD.height
+      );
+      var ts = tb.getText().getTextStyle();
+      ts.setFontFamily(BG_RECON.WORD_FONT);
+      ts.setFontSize(BG_RECON.WORD_SIZE_PT);
+      ts.setForegroundColor(BG_RECON.WORD_COLOR_HEX);
+      tb.getText().getParagraphStyle().setParagraphAlignment(SlidesApp.ParagraphAlignment.CENTER);
+      tb.setContentAlignment(SlidesApp.ContentAlignment.MIDDLE);
+    } else {
+      Logger.log("slide[%d] divider — no section label could be inferred; band added without a word", i);
+    }
+    counts.divider++;
+  });
+
+  Logger.log(
+    "Picture-background reconstruction %s — title:%d divider:%d content:%d skipped:%d",
+    isDryRun ? "dry run" : "complete",
+    counts.title, counts.divider, counts.content, counts.skipped
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Step 10 — updateSlidesPresentation (public orchestrator)
 // ---------------------------------------------------------------------------
 
@@ -1228,16 +1583,15 @@ function replacePlaceholderColors(presentationId) {
  * Runs the full brand update pipeline on a single presentation:
  *   1. Update master theme ColorScheme (Accent slots → new palette)
  *   2. Replace all inline (direct) RGB colors
-<<<<<<< HEAD
- *   3. Replace Poppins / Figtree fonts with Lexend
- *   4. Replace logo images on master, layout, and slide pages
-=======
  *   3. Replace Poppins / Figtree fonts with Geist
  *   4. Replace logo images on master/layout slides
->>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
+ *   5. Reconstruct PICTURE-background slides as native brand shapes
  *
  * @param {string}  presentationId
- * @param {boolean} [dryRun=false]  Passed through to replaceLogos.
+ * @param {boolean} [dryRun=false]  Passed through to replaceLogos and
+ *                                  convertPictureBackgrounds.
+ * @param {Object}  [options]  Toggles: { colors, fonts, logo, backgrounds }.
+ *                             backgrounds defaults ON (skip only if === false).
  */
 function updateSlidesPresentation(presentationId, dryRun, options) {
   var opts = options || { colors: true, fonts: true, logo: true };
@@ -1256,11 +1610,6 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
     Logger.log("  ✓ Placeholder shape colors replaced");
   }
 
-<<<<<<< HEAD
-  // 4. Logos on master, layout, and slide pages
-  replaceLogos(presentationId, dryRun, presentation);
-  Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
-=======
   if (opts.fonts) {
     replaceFonts(presentationId, presentation);
     Logger.log("  ✓ Fonts replaced");
@@ -1270,5 +1619,12 @@ function updateSlidesPresentation(presentationId, dryRun, options) {
     replaceLogos(presentationId, dryRun, presentation);
     Logger.log("  ✓ Logo replacement %s", dryRun ? "dry run complete" : "complete");
   }
->>>>>>> 11d1b65c6786cbf8973a846826e00292707ea3b2
+
+  // Reconstruct slides whose branding is baked into a PICTURE page background
+  // (section dividers, title splash, top bars) as native brand shapes.
+  // Default on; pass opts.backgrounds === false to skip.
+  if (opts.backgrounds !== false) {
+    convertPictureBackgrounds(presentationId, dryRun);
+    Logger.log("  ✓ Picture backgrounds reconstructed %s", dryRun ? "(dry run)" : "");
+  }
 }
